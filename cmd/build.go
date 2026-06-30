@@ -301,7 +301,7 @@ func resolveDataset(p *output.Printer, root, src string) (dir string, sum *datas
 			return "", nil, "", output.Usage("no training photos — pass a folder (`loradex build ./photos`) or pick one in the wizard")
 		}
 		s, e := dataset.Validate(pd)
-		return pd, s, "ingested", e
+		return pd, s, pd, e // source is the project dataset itself (used in place)
 	}
 	s, e := dataset.Ingest(src, pd)
 	if e == nil {
@@ -309,7 +309,7 @@ func resolveDataset(p *output.Printer, root, src string) (dir string, sum *datas
 			p.Info("skipped %s", sk)
 		}
 	}
-	return pd, s, "ingested", e
+	return pd, s, src, e // source is the folder the user selected
 }
 
 func dirExists(p string) bool {
@@ -400,7 +400,14 @@ func printBuildPlan(p *output.Printer, proj *workspace.Project, cat *catalog.Cat
 	p.Info("  Project      %s", proj.Name)
 	p.Info("  Model        %-12s →  repo: %s", base, cat.Name)
 	p.Info("  New version  %-6s            models/%s/versions/%s/", v, base, v)
-	p.Info("  Dataset      %s   (%d images, %v)", dsDir, ds.ImageCount, ds.Formats)
+	if source != "" && filepath.Clean(source) != filepath.Clean(dsDir) {
+		// Ingested from a folder the user picked — show the source, then the
+		// project-managed copy that training actually reads from.
+		p.Info("  Dataset      %s   (%d images, %v)", source, ds.ImageCount, ds.Formats)
+		p.Info("    copied to  %s", dsDir)
+	} else {
+		p.Info("  Dataset      %s   (%d images, %v)", dsDir, ds.ImageCount, ds.Formats)
+	}
 	p.Info("    hash %s   captions: %s   trigger: %s", short16(ds.Hash), plan.Req.CaptionMode, dashList(cat.TriggerWords))
 	p.Info("  Trainer      ai-toolkit · device: %s (%s)", dev.DeviceName, dev.Device)
 	p.Info("    network    LoRA rank %d / alpha %d", prof.Rank, prof.Alpha)

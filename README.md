@@ -29,8 +29,11 @@ loradex push
 
 ```bash
 brew tap keeandrews/loradex
+brew trust keeandrews/loradex     # Homebrew 6+ requires trusting third-party taps
 brew install loradex
 ```
+
+Upgrade later with `brew update && brew upgrade loradex`.
 
 ### One-line installer (portable, single-folder)
 

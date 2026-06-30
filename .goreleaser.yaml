@@ -1,0 +1,76 @@
+# GoReleaser config — on each `vX.Y.Z` tag, builds cross-platform binaries,
+# publishes a GitHub release, and updates the Homebrew tap formula.
+# Validate locally with `goreleaser check` and `goreleaser build --snapshot --clean`.
+version: 2
+
+project_name: loradex
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: loradex
+    main: ./cmd/loradex
+    binary: loradex
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/keeandrews/loradex-cli/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/keeandrews/loradex-cli/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/keeandrews/loradex-cli/internal/buildinfo.Date={{ .Date }}
+
+archives:
+  - id: loradex
+    formats: [tar.gz]
+    name_template: >-
+      loradex_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+homebrew_casks:
+  - name: loradex
+    repository:
+      owner: keeandrews
+      name: homebrew-loradex
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/keeandrews/loradex-cli"
+    description: "Git for LoRAs from the command line — discover, train, convert, and publish LoRAs"
+    commit_author:
+      name: goreleaser-bot
+      email: goreleaser@users.noreply.github.com
+    # Strip the macOS quarantine attribute so the unsigned binary runs without a Gatekeeper prompt.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/loradex"]
+          end
+
+release:
+  github:
+    owner: keeandrews
+    name: loradex-cli
+  draft: false
+  prerelease: auto

@@ -31,15 +31,49 @@ func TestResolve_AutoSteps_Clamped(t *testing.T) {
 }
 
 func TestResolve_MPSForcesBf16(t *testing.T) {
-	p, warns := Resolve("flux2-klein", Layers{Flags: map[string]any{"precision": "fp16"}, Device: "mps", ImageCount: 30})
+	p, warns := Resolve("flux2-klein", Layers{Flags: map[string]any{"precision": "fp16"}, Device: "mps", MemoryGB: 16, ImageCount: 30})
 	if p.Precision != "bf16" {
 		t.Errorf("MPS must force bf16, got %q", p.Precision)
 	}
 	if len(warns) == 0 {
 		t.Error("expected a warning about forced precision")
 	}
-	if !p.Quantize {
-		t.Error("flux on MPS should enable quantize")
+}
+
+func TestResolve_MPSLowRAMKeepsMemorySavers(t *testing.T) {
+	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 16, ImageCount: 30})
+	if !p.Quantize || !p.GradientCheckpointing {
+		t.Errorf("low-RAM MPS should keep quantize+checkpointing on, got q=%v gc=%v", p.Quantize, p.GradientCheckpointing)
+	}
+	if p.GradAccum < 4 {
+		t.Errorf("low-RAM MPS grad_accum = %d, want >=4", p.GradAccum)
+	}
+}
+
+func TestResolve_MPSHighRAMKeepsSaversByDefault(t *testing.T) {
+	// Even with ample RAM, memory-savers stay on by default: unified memory is
+	// shared with the OS/other apps, and overflowing it into swap is far slower
+	// than the compute the savers cost (measured: FLUX.2 4B with checkpointing
+	// off thrashes swap and climbs to ~80 s/it on a 48 GB M3 Max).
+	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 48, ImageCount: 30})
+	if !p.Quantize || !p.GradientCheckpointing {
+		t.Errorf("high-RAM MPS should still default savers on, got q=%v gc=%v", p.Quantize, p.GradientCheckpointing)
+	}
+	if p.GradAccum < 4 {
+		t.Errorf("high-RAM MPS grad_accum = %d, want >=4", p.GradAccum)
+	}
+}
+
+func TestResolve_UserCanDisableSavers(t *testing.T) {
+	// The speed path is opt-in: explicit flags must override the safe defaults.
+	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 48, Flags: map[string]any{
+		"quantize": false, "gradient_checkpointing": false,
+	}, ImageCount: 30})
+	if p.Quantize {
+		t.Error("explicit --quantize=false must override the default")
+	}
+	if p.GradientCheckpointing {
+		t.Error("explicit --gradient-checkpointing=false must override the default")
 	}
 }
 

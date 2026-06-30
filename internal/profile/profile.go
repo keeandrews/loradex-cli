@@ -10,24 +10,25 @@ import (
 
 // Profile is the modeled subset of trainer knobs plus a passthrough.
 type Profile struct {
-	Base             string
-	Rank             int
-	Alpha            int
-	LR               float64
-	Optimizer        string
-	Precision        string
-	Resolution       int
-	Batch            int
-	GradAccum        int
-	SaveEvery        int
-	TrainTextEncoder bool
-	Steps            int // 0 = auto-derive
-	StepsRange       [2]int
-	StepsPerImage    int
-	Seed             int
-	Bucketing        bool
-	Quantize         bool
-	TrainerExtra     map[string]any
+	Base                  string
+	Rank                  int
+	Alpha                 int
+	LR                    float64
+	Optimizer             string
+	Precision             string
+	Resolution            int
+	Batch                 int
+	GradAccum             int
+	SaveEvery             int
+	TrainTextEncoder      bool
+	Steps                 int // 0 = auto-derive
+	StepsRange            [2]int
+	StepsPerImage         int
+	Seed                  int
+	Bucketing             bool
+	Quantize              bool
+	GradientCheckpointing bool
+	TrainerExtra          map[string]any
 }
 
 func (p Profile) clone() Profile {
@@ -51,8 +52,11 @@ type Layers struct {
 	ProjectBase map[string]any // .loradex/project.yaml training.<base>
 	Flags       map[string]any // explicit build flags
 	Device      string         // mps | cpu | cuda
+	MemoryGB    int            // unified/system memory (drives the MPS speed/fit tradeoff)
 	ImageCount  int
 }
+
+func isFluxBase(base string) bool { return base == "flux2-klein" || base == "flux1" }
 
 // Resolve merges layers into a concrete Profile and returns it with warnings.
 func Resolve(base string, l Layers) (Profile, []string) {
@@ -61,11 +65,29 @@ func Resolve(base string, l Layers) (Profile, []string) {
 	if _, ok := builtin[base]; !ok {
 		warnings = append(warnings, fmt.Sprintf("no built-in profile for base %q — using a generic default", base))
 	}
+
+	// Apple-Silicon (MPS) DEFAULTS — applied before the user layers so explicit
+	// flags/config still win. Memory-savers default ON: unified memory is shared
+	// with the OS and other apps, and overflowing it forces swap/compressor
+	// thrash that is far slower than the compute these savers cost. Empirically a
+	// 48 GB M3 Max running FLUX.2 Klein 4B with checkpointing OFF swaps ~6 GB per
+	// 25 s and climbs to ~80 s/it. The savers are overridable via --quantize /
+	// --gradient-checkpointing / --grad-accum for machines with headroom to spare.
+	if l.Device == "mps" {
+		p.GradientCheckpointing = true
+		if isFluxBase(base) {
+			p.Quantize = true
+		}
+		if p.GradAccum < 4 {
+			p.GradAccum = 4
+		}
+	}
+
 	for _, m := range []map[string]any{l.GlobalBase, l.Named, l.ProjectBase, l.Flags} {
 		applyMap(&p, m)
 	}
 
-	// Apple-Silicon (MPS) overrides — forced regardless of profile.
+	// Apple-Silicon hard constraints — must hold regardless of user input.
 	if l.Device == "mps" {
 		if p.Precision != "bf16" {
 			warnings = append(warnings, fmt.Sprintf("precision %q forced to bf16 on Apple Silicon (MPS)", p.Precision))
@@ -74,12 +96,6 @@ func Resolve(base string, l Layers) (Profile, []string) {
 		if p.Batch != 1 {
 			warnings = append(warnings, "batch forced to 1 on MPS (use --grad-accum for effective batch)")
 			p.Batch = 1
-		}
-		if p.GradAccum < 4 {
-			p.GradAccum = 4
-		}
-		if p.Base == "flux2-klein" || p.Base == "flux1" {
-			p.Quantize = true
 		}
 		// bitsandbytes 8-bit optimizers need CUDA — switch to a MPS-capable one.
 		if p.Optimizer == "adamw8bit" {
@@ -183,6 +199,12 @@ func applyMap(p *Profile, m map[string]any) {
 	}
 	if v, ok := m["bucketing"].(bool); ok {
 		p.Bucketing = v
+	}
+	if v, ok := m["quantize"].(bool); ok {
+		p.Quantize = v
+	}
+	if v, ok := m["gradient_checkpointing"].(bool); ok {
+		p.GradientCheckpointing = v
 	}
 	if v, ok := toInt(m["steps_per_image"]); ok {
 		p.StepsPerImage = v

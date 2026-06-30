@@ -33,6 +33,7 @@ var (
 	bLR                                                                                 float64
 	bOptimizer, bPrecision                                                              string
 	bNoBucketing, bTrainTextEncoder, bInit                                              bool
+	bQuantize, bGradCheckpoint                                                          bool
 )
 
 // wizardOverrides holds the hyperparameters chosen in the interactive wizard
@@ -173,7 +174,7 @@ Examples:
 		}
 		prof, warnings := profile.Resolve(base, profile.Layers{
 			GlobalBase: globalTraining(base), Named: namedProfile(bProfile), ProjectBase: proj.Training[base],
-			Flags: flagLayer, Device: dev.Device, ImageCount: dsSummary.ImageCount,
+			Flags: flagLayer, Device: dev.Device, MemoryGB: dev.MemoryGB, ImageCount: dsSummary.ImageCount,
 		})
 		for _, w := range warnings {
 			p.Info("note: %s", w)
@@ -412,9 +413,7 @@ func printBuildPlan(p *output.Printer, proj *workspace.Project, cat *catalog.Cat
 	p.Info("  Trainer      ai-toolkit · device: %s (%s)", dev.DeviceName, dev.Device)
 	p.Info("    network    LoRA rank %d / alpha %d", prof.Rank, prof.Alpha)
 	p.Info("    steps      %d   optimizer %s   lr %g   precision %s", prof.Steps, prof.Optimizer, prof.LR, prof.Precision)
-	if plan.Quantize {
-		p.Info("    quantize   on (required for this base on MPS)")
-	}
+	p.Info("    speed      quantize %s · grad-checkpoint %s · grad-accum %d", onOff(prof.Quantize), onOff(prof.GradientCheckpointing), prof.GradAccum)
 	p.Info("  Output       %s", plan.OutputPath)
 	p.Info("  ───────────────────────────────────────────")
 }
@@ -440,6 +439,12 @@ func buildFlagOverrides(cmd *cobra.Command) map[string]any {
 	set("train-text-encoder", "train_text_encoder", bTrainTextEncoder)
 	if cmd.Flags().Changed("no-bucketing") {
 		m["bucketing"] = !bNoBucketing
+	}
+	if cmd.Flags().Changed("quantize") {
+		m["quantize"] = bQuantize
+	}
+	if cmd.Flags().Changed("gradient-checkpointing") {
+		m["gradient_checkpointing"] = bGradCheckpoint
 	}
 	return m
 }
@@ -622,6 +627,13 @@ func fmtDuration(secs int) string {
 	return d.Truncate(time.Second).String()
 }
 
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
 func dashList(s []string) string {
 	if len(s) == 0 {
 		return "—"
@@ -652,6 +664,8 @@ func init() {
 	f.StringVar(&bPrecision, "precision", "", "bf16 | fp16 | fp32")
 	f.IntVar(&bResolution, "resolution", 0, "training resolution")
 	f.BoolVar(&bNoBucketing, "no-bucketing", false, "disable aspect-ratio bucketing")
+	f.BoolVar(&bQuantize, "quantize", false, "quantize the base (saves memory, slower on MPS; auto: off on high-RAM Apple Silicon)")
+	f.BoolVar(&bGradCheckpoint, "gradient-checkpointing", false, "gradient checkpointing (saves memory, ~1.5-2x slower; auto: off on high-RAM Apple Silicon)")
 	f.IntVar(&bSeed, "seed", 0, "random seed")
 	f.IntVar(&bSaveEvery, "save-every", 0, "checkpoint/sample interval")
 	f.BoolVar(&bTrainTextEncoder, "train-text-encoder", false, "train the text encoder")

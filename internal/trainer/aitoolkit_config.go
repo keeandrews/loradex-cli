@@ -177,7 +177,7 @@ func buildConfigYAML(req Request) ([]byte, error) {
 		Train: atTrain{
 			Steps: p.Steps, BatchSize: p.Batch, GradientAccumulationSteps: p.GradAccum,
 			LR: p.LR, Optimizer: p.Optimizer, Dtype: p.Precision, TrainTextEncoder: p.TrainTextEncoder,
-			GradientCheckpointing: true, Seed: p.Seed, EnableBucket: p.Bucketing, NoiseScheduler: noiseScheduler,
+			GradientCheckpointing: p.GradientCheckpointing, Seed: p.Seed, EnableBucket: p.Bucketing, NoiseScheduler: noiseScheduler,
 		},
 		Model:  atModel{NameOrPath: req.BaseCheckpoint, Arch: archForBase(req.Base), IsFlux: isFlux(req.Base), Quantize: p.Quantize},
 		Sample: sample,

@@ -425,6 +425,52 @@ loradex models path flux2-klein
 
 ---
 
+### Caption models (interpreters)
+
+Before training, `loradex build` can auto-generate a **detailed caption for every
+image** using a vision-language "interpreter" model — so the LoRA learns from
+descriptive prompts, not just the trigger word. Captions are written as `<image>.txt`
+sidecars (with the trigger prepended). Interpreters are pulled and stored just like
+base models, under `~/.loradex/interpreters`.
+
+#### `loradex interpreters`
+
+Browse/download caption models. The first one you pull becomes your **default
+captioner**. Built-ins: `qwen3-vl-4b` (default), `qwen3-vl-8b`, `qwen2.5-vl-7b`,
+`qwen2.5-vl-3b`. Subcommands mirror `models`: `list`, `pull <id>`, `add`, `rm`, `path`.
+
+```bash
+loradex interpreters                              # interactive browser
+loradex interpreters pull qwen3-vl-4b             # ~9GB → becomes the default
+loradex interpreters add --id my-vlm --repo org/My-VLM
+```
+
+Captioning runs in your trainer's Python (torch + transformers); `loradex setup`
+already provides it. `loradex build` captions automatically when `--caption auto`
+(the default once a captioner exists); pick a model per-run with `--interpreter <id>`.
+
+```bash
+loradex build ./photos --base flux2-klein --trigger ohwxman          # auto-captions
+loradex build ./photos --interpreter qwen3-vl-8b --caption auto       # a different captioner
+loradex build ./photos --caption keep                                 # use existing .txt
+loradex build ./photos --caption none                                 # trigger-only
+```
+
+### Configuration (`loradex config`)
+
+View the home/paths/defaults and set the global default base model and caption model.
+
+```bash
+loradex config                                    # show config + defaults
+loradex config set default-base flux2-klein
+loradex config set default-interpreter qwen3-vl-4b
+```
+
+`build` resolves the base as `--base` > project default > `default-base`; the
+captioner as `--interpreter` > `default-interpreter`.
+
+---
+
 ### Import (Draw Things)
 
 #### `loradex import [file]`

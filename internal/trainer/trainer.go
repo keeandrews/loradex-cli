@@ -37,14 +37,17 @@ type Request struct {
 	Trigger        string
 	DatasetDir     string
 	CaptionMode    string
-	Profile        profile.Profile
-	Device         string
-	CacheDir       string // .loradex/cache/<run-id>
-	OutputDir      string // version dir to collect results into
-	OutputFile     string // final .safetensors filename
-	RawConfig      string // --config escape hatch (path); skips generation
-	Samples        int
-	RunID          string
+	// CaptionsHaveTrigger: the per-image .txt captions already include the
+	// trigger (we generated them), so the trainer must not inject it again.
+	CaptionsHaveTrigger bool
+	Profile             profile.Profile
+	Device              string
+	CacheDir            string // .loradex/cache/<run-id>
+	OutputDir           string // version dir to collect results into
+	OutputFile          string // final .safetensors filename
+	RawConfig           string // --config escape hatch (path); skips generation
+	Samples             int
+	RunID               string
 }
 
 // Plan is the displayable, side-effect-free training plan.

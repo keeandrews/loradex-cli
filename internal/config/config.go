@@ -30,6 +30,10 @@ type File struct {
 	// used when the working directory is not itself a workspace.
 	CurrentProject string `yaml:"current_project,omitempty"`
 
+	// Global defaults (overridable per-command / per-project).
+	DefaultBase        string `yaml:"default_base,omitempty"`        // base model id, e.g. flux2-klein
+	DefaultInterpreter string `yaml:"default_interpreter,omitempty"` // caption model id, e.g. qwen3-vl-4b
+
 	// Training configuration (consumed by internal/trainer + internal/profile).
 	Trainer         *TrainerConfig            `yaml:"trainer,omitempty"`
 	Training        map[string]map[string]any `yaml:"training,omitempty"`         // per-base profile overrides
@@ -39,6 +43,9 @@ type File struct {
 	// Base-model registry (consumed by internal/basemodel).
 	ModelsDir    string        `yaml:"models_dir,omitempty"`    // where downloaded base models live (default <home>/models)
 	CustomModels []CustomModel `yaml:"custom_models,omitempty"` // user-cataloged "other" models
+
+	// Interpreter (caption model) registry (consumed by internal/interpreter).
+	CustomInterpreters []CustomModel `yaml:"custom_interpreters,omitempty"`
 
 	// Trainer backends discovered/installed by the setup wizard.
 	Trainers map[string]TrainerInfo `yaml:"trainers,omitempty"`
@@ -167,6 +174,19 @@ func TrainersDir() (string, error) {
 	}
 	dir := filepath.Join(base, "trainers")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// InterpretersDir returns <home>/interpreters, where caption (VLM) models live.
+func InterpretersDir() (string, error) {
+	base, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "interpreters")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil

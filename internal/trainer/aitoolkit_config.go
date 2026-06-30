@@ -141,11 +141,17 @@ func buildConfigYAML(req Request) ([]byte, error) {
 		sample.SampleEvery = p.SaveEvery
 		sample.Prompts = samplePrompts(req, req.Samples)
 	}
+	// When we generated captions, the trigger is already baked into each .txt —
+	// don't let ai-toolkit prepend it again.
+	triggerWord := req.Trigger
+	if req.CaptionsHaveTrigger {
+		triggerWord = ""
+	}
 	proc := atProcess{
 		Type:           "sd_trainer",
 		TrainingFolder: req.CacheDir,
 		Device:         req.Device,
-		TriggerWord:    req.Trigger,
+		TriggerWord:    triggerWord,
 		Network:        atNetwork{Type: "lora", Linear: p.Rank, LinearAlpha: p.Alpha},
 		Save:           atSave{Dtype: p.Precision, SaveEvery: p.SaveEvery, MaxStepSavesToKeep: 4},
 		Datasets:       []atDataset{{FolderPath: req.DatasetDir, CaptionExt: "txt", Resolution: p.Resolution}},

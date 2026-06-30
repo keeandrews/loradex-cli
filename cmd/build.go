@@ -9,9 +9,11 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/keeandrews/loradex-cli/internal/basemodel"
+	"github.com/keeandrews/loradex-cli/internal/caption"
 	"github.com/keeandrews/loradex-cli/internal/catalog"
 	"github.com/keeandrews/loradex-cli/internal/config"
 	"github.com/keeandrews/loradex-cli/internal/dataset"
+	"github.com/keeandrews/loradex-cli/internal/interpreter"
 	"github.com/keeandrews/loradex-cli/internal/output"
 	"github.com/keeandrews/loradex-cli/internal/profile"
 	"github.com/keeandrews/loradex-cli/internal/project"
@@ -24,7 +26,7 @@ import (
 
 var (
 	bPath, bDataset, bBase, bTrigger, bType, bName, bCaption, bProfile                  string
-	bTrainer, bDevice, bConfig, bCheckpoint                                             string
+	bTrainer, bDevice, bConfig, bCheckpoint, bInterpreter                               string
 	bDryRun, bResume                                                                    bool
 	bSteps, bRank, bAlpha, bBatch, bGradAccum, bResolution, bSeed, bSaveEvery, bSamples int
 	bLR                                                                                 float64
@@ -64,13 +66,18 @@ Examples:
 			return err
 		}
 
-		// 4. Resolve base/target.
+		// 4. Resolve base/target: --base > project default > global config default.
 		base := bBase
 		if base == "" {
 			base = proj.DefaultBase
 		}
 		if base == "" {
-			return output.Usage("specify --base (e.g. flux2-klein)")
+			if f, _ := config.Load(); f != nil {
+				base = f.DefaultBase
+			}
+		}
+		if base == "" {
+			return output.Usage("specify --base (e.g. flux2-klein), or set one with `loradex config set default-base <id>`")
 		}
 
 		// 2. Resolve dataset.
@@ -78,8 +85,10 @@ Examples:
 		if err != nil {
 			return err
 		}
-		// 3. Captions.
-		captionMode, capWarn := dataset.ResolveCaptionMode(dsDir, bCaption, false)
+		// 3. Captions. A captioner (interpreter) is "configured" if one is
+		// resolvable — that makes the default/auto mode generate real captions.
+		interp := resolveInterpreter()
+		captionMode, capWarn := dataset.ResolveCaptionMode(dsDir, bCaption, interp != "")
 		if capWarn != "" {
 			p.Info("note: %s", capWarn)
 		}
@@ -165,6 +174,14 @@ Examples:
 			return err
 		}
 		plan.Req.BaseCheckpoint = ckpt
+
+		// 7c. Caption the dataset with the interpreter (mode auto) before training.
+		if captionMode == "auto" && interp != "" {
+			if err := captionDataset(cmd, p, interp, dsDir, bTrigger); err != nil {
+				return err
+			}
+			plan.Req.CaptionsHaveTrigger = bTrigger != ""
+		}
 
 		// 8. Train.
 		p.Info("training… (cache: %s)", req.CacheDir)
@@ -403,6 +420,53 @@ func ensureBaseModel(cmd *cobra.Command, p *output.Printer, base, current string
 	return "", nil
 }
 
+// resolveInterpreter picks the caption model: --interpreter > config default.
+func resolveInterpreter() string {
+	if bInterpreter != "" {
+		return bInterpreter
+	}
+	if f, err := config.Load(); err == nil {
+		return f.DefaultInterpreter
+	}
+	return ""
+}
+
+// captionDataset generates per-image captions with the interpreter, downloading
+// it first if needed. Captions are written as <stem>.txt next to each image.
+func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trigger string) error {
+	e, ok := interpreter.Find(interpID)
+	if !ok {
+		return output.Errorf(output.ExitValidation, "unknown_interpreter",
+			"see `loradex interpreters list`", "unknown interpreter %q", interpID)
+	}
+	if !interpreter.IsDownloaded(e) {
+		interactive := p.IsTTY() && !g.yes && !g.json
+		if !interactive && !g.yes {
+			return output.Errorf(output.ExitValidation, "interpreter_missing",
+				"run `loradex interpreters pull "+interpID+"`", "caption model %q is not downloaded", interpID)
+		}
+		if g.yes || confirm(p, fmt.Sprintf("Caption model %q isn't downloaded. Download %s (~%gGB) now?", interpID, e.Repo, e.SizeGB)) {
+			if _, err := pullInterpreter(cmd, p, interpID, false); err != nil {
+				return err
+			}
+		} else {
+			return output.Errorf(output.ExitError, "aborted", "", "captioning needs the interpreter; aborted")
+		}
+	}
+	modelPath, err := interpreter.LocalPath(e)
+	if err != nil {
+		return err
+	}
+	_, python := trainerLocation()
+	p.Info("captioning dataset with %s…", e.Name)
+	res, err := caption.Run(cmd.Context(), python, modelPath, dsDir, caption.DefaultPrompt, trigger, p)
+	if err != nil {
+		return err
+	}
+	p.Success("captioned %d/%d images", res.Captioned, res.Total)
+	return nil
+}
+
 // trainerLocation resolves where ai-toolkit lives via the central registry,
 // which honors (in order) the trainers config map, the legacy trainer.ai_toolkit
 // block, $LORADEX_AITOOLKIT_HOME, <home>/trainers/ai-toolkit, and ~/ai-toolkit.
@@ -477,5 +541,6 @@ func init() {
 	f.IntVar(&bSamples, "samples", 0, "number of validation samples")
 	f.StringVar(&bConfig, "config", "", "raw ai-toolkit config file (escape hatch)")
 	f.StringVar(&bCheckpoint, "checkpoint", "", "base model path or HF id (overrides the built-in mapping; use a local model)")
+	f.StringVar(&bInterpreter, "interpreter", "", "caption model to auto-caption the dataset (default: config default_interpreter)")
 	rootCmd.AddCommand(buildCmd)
 }

@@ -40,7 +40,7 @@ def load_model(model_path, dtype):
             import transformers
 
             cls = getattr(transformers, cls_name)
-            return cls.from_pretrained(model_path, torch_dtype=dtype)
+            return cls.from_pretrained(model_path, dtype=dtype)
         except Exception as e:  # noqa: BLE001
             last = e
     raise RuntimeError(f"could not load interpreter model: {last}")
@@ -83,7 +83,7 @@ def main():
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = processor(text=[text], images=[img], return_tensors="pt").to(device)
             with torch.no_grad():
-                out = model.generate(**inputs, max_new_tokens=220, do_sample=False)
+                out = model.generate(**inputs, max_new_tokens=256, do_sample=False)
             gen = out[0][inputs["input_ids"].shape[1]:]
             caption = processor.decode(gen, skip_special_tokens=True).strip()
         except Exception as e:  # noqa: BLE001

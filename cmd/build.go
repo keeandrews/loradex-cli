@@ -541,17 +541,36 @@ func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trig
 		return err
 	}
 	_, python := trainerLocation()
-	p.Info("captioning %d images with %s (loading the model first run)…", total, e.Name)
-	bar := progressbar.NewOptions(total,
-		progressbar.OptionSetDescription("  captions"),
-		progressbar.OptionSetWriter(p.Err),
-		progressbar.OptionShowCount(),
-		progressbar.OptionSetVisibility(p.ProgressEnabled()),
-		progressbar.OptionClearOnFinish(),
-	)
+	p.Info("captioning %d images with %s", total, e.Name)
+
+	// The model load is slow and silent (especially first run / under memory
+	// pressure), so show a spinner until the interpreter reports "ready", then
+	// swap to a determinate per-image bar.
+	var bar *progressbar.ProgressBar
+	spin := startSpinner(p, fmt.Sprintf("loading %s — first run can take a few minutes", e.Name))
 	res, err := caption.Run(cmd.Context(), python, modelPath, dsDir, caption.DefaultPrompt, trigger,
-		func(done int) { _ = bar.Set(done) }, p)
-	_ = bar.Finish()
+		func(done int) {
+			if bar != nil {
+				_ = bar.Set(done)
+			}
+		},
+		func(phase string) {
+			if phase == "ready" && bar == nil {
+				spin.stop()
+				bar = progressbar.NewOptions(total,
+					progressbar.OptionSetDescription("  captions"),
+					progressbar.OptionSetWriter(p.Err),
+					progressbar.OptionShowCount(),
+					progressbar.OptionSetVisibility(p.ProgressEnabled()),
+					progressbar.OptionClearOnFinish(),
+				)
+			}
+		},
+		p)
+	spin.stop() // no-op if already stopped; covers the load-failed path
+	if bar != nil {
+		_ = bar.Finish()
+	}
 	if err != nil {
 		return err
 	}

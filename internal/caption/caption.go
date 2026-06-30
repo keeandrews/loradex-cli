@@ -36,8 +36,11 @@ type Result struct {
 // Run captions every image in imageDir using the interpreter at modelPath, run
 // via the given python. A non-empty trigger is prepended to each caption.
 // onProgress (may be nil) is called with the running count of captioned images
-// so callers can render a progress bar; interpreter stderr goes to verbose logs.
-func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger string, onProgress func(done int), p *output.Printer) (Result, error) {
+// so callers can render a progress bar; onStatus (may be nil) is called with the
+// interpreter's lifecycle phase ("loading", "ready") so callers can show a
+// spinner during the slow, silent model load; interpreter stderr goes to verbose
+// logs.
+func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger string, onProgress func(done int), onStatus func(phase string), p *output.Printer) (Result, error) {
 	if python == "" {
 		return Result{}, output.Errorf(output.ExitValidation, "no_python",
 			"run `loradex setup` to configure a trainer (its Python runs the interpreter)",
@@ -74,7 +77,11 @@ func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger strin
 			if json.Unmarshal([]byte(line), &m) != nil {
 				continue
 			}
-			if _, ok := m["image"]; ok { // a per-image result (caption or error)
+			if s, ok := m["status"].(string); ok { // lifecycle phase (loading/ready)
+				if onStatus != nil {
+					onStatus(s)
+				}
+			} else if _, ok := m["image"]; ok { // a per-image result (caption or error)
 				captioned++
 				if onProgress != nil {
 					onProgress(captioned)

@@ -60,6 +60,8 @@ def main():
 
     device, dtype = pick_device()
     log(f"loading interpreter on {device}…")
+    # Signal the (often slow, silent) load phase so the CLI can show a spinner.
+    print(json.dumps({"status": "loading", "device": device}), flush=True)
     try:
         from transformers import AutoProcessor
 
@@ -73,6 +75,8 @@ def main():
         print(json.dumps({"ok": False, "error": f"model load failed: {e}"}))
         return 1
 
+    # Model is ready — the CLI swaps the spinner for a per-image progress bar.
+    print(json.dumps({"status": "ready", "total": len(images)}), flush=True)
     captioned = 0
     for fn in images:
         path = os.path.join(image_dir, fn)

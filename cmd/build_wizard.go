@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -12,6 +14,7 @@ import (
 
 // wizardCfg holds the build settings collected by the interactive wizard.
 type wizardCfg struct {
+	datasetPath                        string
 	base, interpreterID, trigger, name string
 	steps, rank, alpha, resolution     int // steps 0 = auto
 	lr                                 float64
@@ -26,6 +29,7 @@ type setting struct {
 }
 
 var buildSettings = []setting{
+	{"dataset", "Training photos", "folder of images to train on (e.g. ~/Desktop/selfies)", func(c *wizardCfg) string { return orDashW(c.datasetPath) }},
 	{"base", "Base model", "the model your LoRA fine-tunes (e.g. flux2-klein)", func(c *wizardCfg) string { return c.base }},
 	{"interpreter", "Caption model", "vision model that auto-captions your images (e.g. qwen3-vl-4b; 'none' to skip)", func(c *wizardCfg) string { return orDashW(c.interpreterID) }},
 	{"trigger", "Trigger word", "the token the LoRA binds to (e.g. ohwxman)", func(c *wizardCfg) string { return orDashW(c.trigger) }},
@@ -65,6 +69,10 @@ func runBuildWizard(header string, cfg wizardCfg) (wizardCfg, bool) {
 		}
 		switch choice {
 		case startOpt:
+			if strings.TrimSpace(cfg.datasetPath) == "" {
+				fmt.Println("  ⚠ choose a Training photos folder first.")
+				continue
+			}
 			return cfg, true
 		case cancelOpt:
 			return cfg, false
@@ -95,6 +103,8 @@ func descFor(key string) string {
 func editSetting(key string, cfg *wizardCfg) {
 	msg := func(label string) string { return fmt.Sprintf("%s — %s:", label, descFor(key)) }
 	switch key {
+	case "dataset":
+		cfg.datasetPath = askPath(msg("Training photos"), cfg.datasetPath)
 	case "base":
 		cfg.base = pickFromRegistry(msg("Base model"), baseOptions(), cfg.base)
 	case "interpreter":
@@ -194,6 +204,65 @@ func askInput(msg, def string, validator survey.Validator) string {
 		return def
 	}
 	return ans
+}
+
+// askPath prompts for a folder of training images, expanding ~ and validating
+// that it exists and contains at least one image.
+func askPath(msg, def string) string {
+	var ans string
+	q := &survey.Input{Message: msg, Default: def, Suggest: suggestDirs}
+	if err := survey.AskOne(q, &ans, survey.WithValidator(imageFolderValidator)); err != nil {
+		return def
+	}
+	return expandHome(strings.TrimSpace(ans))
+}
+
+// suggestDirs offers tab-completion over directories for the path prompt.
+func suggestDirs(toComplete string) []string {
+	dir := expandHome(toComplete)
+	base := filepath.Dir(dir)
+	if strings.HasSuffix(toComplete, "/") {
+		base = dir
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, filepath.Join(base, e.Name())+"/")
+		}
+	}
+	return out
+}
+
+func imageFolderValidator(ans interface{}) error {
+	p := expandHome(strings.TrimSpace(fmt.Sprint(ans)))
+	if p == "" {
+		return fmt.Errorf("enter a folder path")
+	}
+	fi, err := os.Stat(p)
+	if err != nil || !fi.IsDir() {
+		return fmt.Errorf("not a folder: %s", p)
+	}
+	entries, _ := os.ReadDir(p)
+	for _, e := range entries {
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".jpg", ".jpeg", ".png", ".webp", ".bmp":
+			return nil
+		}
+	}
+	return fmt.Errorf("no images (.jpg/.png/.webp) found in %s", p)
+}
+
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+		}
+	}
+	return p
 }
 
 func askInt(msg string, def, min, max int) int {

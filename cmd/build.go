@@ -71,13 +71,7 @@ Examples:
 			return err
 		}
 
-		// 2. Resolve dataset (needed for image count / the wizard).
-		dsDir, dsSummary, source, err := resolveDataset(p, root, args)
-		if err != nil {
-			return err
-		}
-
-		// 3. Resolve base: --base > project default > global config default.
+		// 2. Resolve base: --base > project default > global config default.
 		base := bBase
 		if base == "" {
 			base = proj.DefaultBase
@@ -86,6 +80,16 @@ Examples:
 			if f, _ := config.Load(); f != nil {
 				base = f.DefaultBase
 			}
+		}
+
+		// 3. Where the training photos come from: arg / --dataset / the project's
+		// existing dataset. The wizard lets the user change it.
+		datasetSrc := bDataset
+		if datasetSrc == "" && len(args) == 1 {
+			datasetSrc = args[0]
+		}
+		if datasetSrc == "" && dirExists(workspace.DatasetDir(root)) {
+			datasetSrc = workspace.DatasetDir(root)
 		}
 
 		// 3b. Interactive wizard: present every setting prefilled with defaults,
@@ -98,20 +102,22 @@ Examples:
 			if base == "" {
 				base = "flux2-klein"
 			}
-			def, _ := profile.Resolve(base, profile.Layers{Device: dev.Device, ImageCount: dsSummary.ImageCount})
+			def, _ := profile.Resolve(base, profile.Layers{Device: dev.Device})
 			name := bName
 			if name == "" {
 				name = proj.Name + "-" + base
 			}
 			wc := wizardCfg{
-				base: base, interpreterID: orDefault(bInterpreter, resolveInterpreter()), trigger: bTrigger, name: name,
+				datasetPath: datasetSrc,
+				base:        base, interpreterID: orDefault(bInterpreter, resolveInterpreter()), trigger: bTrigger, name: name,
 				steps: bSteps, rank: def.Rank, alpha: def.Alpha, lr: def.LR,
 				optimizer: def.Optimizer, precision: def.Precision, resolution: def.Resolution,
 			}
-			res, ok := runBuildWizard(fmt.Sprintf("Train a LoRA in %q  ·  %d images", proj.Name, dsSummary.ImageCount), wc)
+			res, ok := runBuildWizard(fmt.Sprintf("Train a LoRA in %q", proj.Name), wc)
 			if !ok {
 				return output.Errorf(output.ExitError, "aborted", "", "cancelled")
 			}
+			datasetSrc = res.datasetPath
 			base, bBase, bTrigger, bName, bInterpreter = res.base, res.base, res.trigger, res.name, res.interpreterID
 			bCaption = "auto"
 			if res.interpreterID == "" {
@@ -127,6 +133,13 @@ Examples:
 		}
 		if base == "" {
 			return output.Usage("specify --base (e.g. flux2-klein), or set one with `loradex config set default-base <id>`")
+		}
+
+		// 4. Resolve the dataset from the chosen source (ingests an external
+		// folder into the project's dataset/, or uses an existing dataset).
+		dsDir, dsSummary, source, err := resolveDataset(p, root, datasetSrc)
+		if err != nil {
+			return err
 		}
 
 		// 3c. Captions. A captioner (interpreter) is "configured" if one is
@@ -278,27 +291,30 @@ Examples:
 
 // --- helpers ---
 
-func resolveDataset(p *output.Printer, root string, args []string) (dir string, sum *dataset.Summary, source string, err error) {
-	switch {
-	case bDataset != "":
-		s, e := dataset.Validate(bDataset)
-		return bDataset, s, "external", e
-	case len(args) == 1:
-		s, e := dataset.Ingest(args[0], workspace.DatasetDir(root))
-		if e == nil {
-			for _, sk := range s.Skipped {
-				p.Info("skipped %s", sk)
-			}
+// resolveDataset resolves the training set from a source folder. An empty src
+// (or the project's own dataset/) uses the existing project dataset; any other
+// folder is ingested into the project's dataset/.
+func resolveDataset(p *output.Printer, root, src string) (dir string, sum *dataset.Summary, source string, err error) {
+	pd := workspace.DatasetDir(root)
+	if src == "" || filepath.Clean(src) == filepath.Clean(pd) {
+		if !dirExists(pd) {
+			return "", nil, "", output.Usage("no training photos — pass a folder (`loradex build ./photos`) or pick one in the wizard")
 		}
-		return workspace.DatasetDir(root), s, "ingested", e
-	default:
-		dsDir := workspace.DatasetDir(root)
-		if _, e := os.Stat(dsDir); e != nil {
-			return "", nil, "", output.Usage("no dataset — pass a folder of images or --dataset <path>")
-		}
-		s, e := dataset.Validate(dsDir)
-		return dsDir, s, "ingested", e
+		s, e := dataset.Validate(pd)
+		return pd, s, "ingested", e
 	}
+	s, e := dataset.Ingest(src, pd)
+	if e == nil {
+		for _, sk := range s.Skipped {
+			p.Info("skipped %s", sk)
+		}
+	}
+	return pd, s, "ingested", e
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 func ensureRepo(root, base, slug, trigger, _ string) (*catalog.Catalog, error) {

@@ -3,3 +3,7 @@
 /dist/
 *.test
 *.out
+
+# Python caches (embedded scripts are run elsewhere)
+__pycache__/
+*.py[cod]

@@ -554,9 +554,12 @@ func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trig
 				_ = bar.Set(done)
 			}
 		},
-		func(phase string) {
+		func(phase string, reported int) {
 			if phase == "ready" && bar == nil {
 				spin.stop()
+				if reported > 0 {
+					total = reported // size to what the interpreter actually walks
+				}
 				bar = progressbar.NewOptions(total,
 					progressbar.OptionSetDescription("  captions"),
 					progressbar.OptionSetWriter(p.Err),

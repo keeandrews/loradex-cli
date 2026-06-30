@@ -72,6 +72,14 @@ func Ingest(srcDir, datasetDir string) (*Summary, error) {
 	if err := os.MkdirAll(datasetDir, 0o755); err != nil {
 		return nil, err
 	}
+	// Re-ingest is a replace, not an append: clear previously-ingested images
+	// and captions so the dataset exactly mirrors srcDir. Without this, repeated
+	// `loradex build` runs pile up stale images, inflating the captioned/trained
+	// set far beyond what the plan reports. Metadata (dataset.yaml, .aitk_*) and
+	// subdirs are left intact.
+	if err := clearIngested(datasetDir); err != nil {
+		return nil, err
+	}
 	s := &Summary{}
 	formats := map[string]bool{}
 	var total int64
@@ -135,6 +143,31 @@ func Ingest(srcDir, datasetDir string) (*Summary, error) {
 	s.Formats = sortedKeys(formats)
 	s.Hash, err = Hash(datasetDir)
 	return s, err
+}
+
+// clearIngested removes top-level image and caption files from a dataset dir so
+// a fresh Ingest mirrors the source exactly. Subdirs and metadata files
+// (dataset.yaml, .aitk_size.json, etc.) are preserved.
+func clearIngested(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".txt":
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Validate inspects an external dataset folder in place (no copy).

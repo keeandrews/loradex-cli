@@ -44,6 +44,42 @@ func TestIngest_SkipsNonImages(t *testing.T) {
 	}
 }
 
+func TestIngest_ReplacesNotAppends(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "dataset")
+
+	// First source: two images + a stale caption + metadata that must survive.
+	src1 := t.TempDir()
+	write(t, filepath.Join(src1, "old1.png"), pngSig)
+	write(t, filepath.Join(src1, "old2.jpg"), jpgSig)
+	if _, err := Ingest(src1, dst); err != nil {
+		t.Fatalf("first Ingest: %v", err)
+	}
+	// A metadata file the trainer/project owns — must be preserved across re-ingest.
+	write(t, filepath.Join(dst, "dataset.yaml"), []byte("image_count: 2\n"))
+
+	// Second source with different images: dataset must mirror src2, not pile up.
+	src2 := t.TempDir()
+	write(t, filepath.Join(src2, "new1.png"), pngSig)
+	s, err := Ingest(src2, dst)
+	if err != nil {
+		t.Fatalf("second Ingest: %v", err)
+	}
+	if s.ImageCount != 1 {
+		t.Errorf("ImageCount = %d, want 1 (replace, not append)", s.ImageCount)
+	}
+	for _, stale := range []string{"old1.png", "old2.jpg"} {
+		if _, err := os.Stat(filepath.Join(dst, stale)); !os.IsNotExist(err) {
+			t.Errorf("stale image %s survived re-ingest", stale)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dst, "new1.png")); err != nil {
+		t.Errorf("new image not present: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "dataset.yaml")); err != nil {
+		t.Errorf("metadata dataset.yaml was wrongly removed: %v", err)
+	}
+}
+
 func TestHash_DeterministicOrderIndependent(t *testing.T) {
 	d1 := t.TempDir()
 	write(t, filepath.Join(d1, "z.png"), append(pngSig, 1))

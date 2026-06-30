@@ -320,6 +320,20 @@ func dirExists(p string) bool {
 func ensureRepo(root, base, slug, trigger, _ string) (*catalog.Catalog, error) {
 	rp := workspace.RepoYAMLPath(root, base)
 	if c, err := catalog.Load(rp); err == nil {
+		// Sync the build's choices onto the existing catalog — the user may have
+		// changed them (e.g. in the wizard); the chosen values are authoritative.
+		changed := false
+		if trigger != "" && (len(c.TriggerWords) == 0 || c.TriggerWords[0] != trigger) {
+			c.TriggerWords = []string{trigger}
+			changed = true
+		}
+		if slug != "" && slug != c.Name {
+			c.Name, c.Weights = slug, slug+".safetensors"
+			changed = true
+		}
+		if changed {
+			_ = os.WriteFile(rp, []byte(project.RenderCatalog(c)), 0o644)
+		}
 		return c, nil
 	}
 	if err := os.MkdirAll(workspace.ModelDir(root, base), 0o755); err != nil {
@@ -387,7 +401,7 @@ func printBuildPlan(p *output.Printer, proj *workspace.Project, cat *catalog.Cat
 	p.Info("  Model        %-12s →  repo: %s", base, cat.Name)
 	p.Info("  New version  %-6s            models/%s/versions/%s/", v, base, v)
 	p.Info("  Dataset      %s   (%d images, %v)", dsDir, ds.ImageCount, ds.Formats)
-	p.Info("    hash %s   captions: %s   trigger: %s", short16(ds.Hash), cat.TriggerWords, dashList(cat.TriggerWords))
+	p.Info("    hash %s   captions: %s   trigger: %s", short16(ds.Hash), plan.Req.CaptionMode, dashList(cat.TriggerWords))
 	p.Info("  Trainer      ai-toolkit · device: %s (%s)", dev.DeviceName, dev.Device)
 	p.Info("    network    LoRA rank %d / alpha %d", prof.Rank, prof.Alpha)
 	p.Info("    steps      %d   optimizer %s   lr %g   precision %s", prof.Steps, prof.Optimizer, prof.LR, prof.Precision)

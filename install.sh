@@ -85,19 +85,17 @@ mkdir -p "$BIN_DIR"
 
 # --- obtain the binary ---
 build_from_repo() {
-  [ -d "$SCRIPT_DIR/cli" ] || return 1
+  [ -f "$SCRIPT_DIR/go.mod" ] || return 1
   command -v go >/dev/null 2>&1 || return 1
-  info "building from source ($SCRIPT_DIR/cli)…"
-  ( cd "$SCRIPT_DIR/cli" && go build -trimpath -o "$BIN" . )
+  info "building from source ($SCRIPT_DIR)…"
+  ( cd "$SCRIPT_DIR" && go build -trimpath -o "$BIN" ./cmd/loradex )
 }
 
 install_via_go() {
   command -v go >/dev/null 2>&1 || return 1
-  info "go install $GO_PKG@latest…"
-  GOBIN="$BIN_DIR" go install "$GO_PKG@latest" || return 1
-  # `go install` names the binary after the package ("cli"); normalize it.
-  [ -x "$BIN_DIR/cli" ] && mv -f "$BIN_DIR/cli" "$BIN"
-  [ -x "$BIN" ]
+  info "go install $GO_PKG/cmd/loradex@latest…"
+  GOBIN="$BIN_DIR" go install "$GO_PKG/cmd/loradex@latest" || return 1
+  [ -x "$BIN" ]  # the cmd/loradex entrypoint installs as `loradex`
 }
 
 if build_from_repo; then

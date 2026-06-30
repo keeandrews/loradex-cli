@@ -47,7 +47,7 @@ setup wizard, and offers to add loradex to your PATH.
 ### From source (Go 1.26+)
 
 ```bash
-go install github.com/keeandrews/loradex-cli@latest   # installs `loradex`
+go install github.com/keeandrews/loradex-cli/cmd/loradex@latest   # installs `loradex`
 # or, in a checkout:
 make build && ./loradex version
 ```

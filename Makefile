@@ -17,11 +17,11 @@ LDFLAGS := -s -w \
 
 .PHONY: build
 build: ## Build the host binary
-	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/loradex
 
 .PHONY: install
 install: ## Install into GOBIN
-	go install -trimpath -ldflags "$(LDFLAGS)" .
+	go install -trimpath -ldflags "$(LDFLAGS)" ./cmd/loradex
 
 .PHONY: test
 test: ## Run tests with race + coverage
@@ -44,7 +44,7 @@ cross: ## Cross-compile the five target platforms into dist/
 		os=$${t%/*}; arch=$${t#*/}; ext=; [ "$$os" = windows ] && ext=.exe; \
 		echo "  $$os/$$arch"; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o $(DIST)/$(BINARY)-$$os-$$arch$$ext .; \
+			-o $(DIST)/$(BINARY)-$$os-$$arch$$ext ./cmd/loradex; \
 	done
 
 .PHONY: clean

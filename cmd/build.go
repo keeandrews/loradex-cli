@@ -209,10 +209,16 @@ Examples:
 			}
 		}
 		outFile := slug + ".safetensors"
+		// Auto-captioning bakes the trigger into each .txt, so the trainer must not
+		// inject it again — and that's also what makes text-embedding caching safe.
+		// This is deterministic from the caption mode + trigger, so set it up front
+		// so the plan reflects the real config (captioning itself runs below).
+		captionsHaveTrigger := captionMode == "auto" && interp != "" && bTrigger != ""
 		req := trainer.Request{
 			BaseCheckpoint: resolveCheckpoint(base),
 			Name:           slug, Base: base, Trigger: bTrigger, DatasetDir: dsDir, CaptionMode: captionMode,
-			Profile: prof, Device: dev.Device, CacheDir: filepath.Join(workspace.CacheDir(root), runID),
+			CaptionsHaveTrigger: captionsHaveTrigger,
+			Profile:             prof, Device: dev.Device, CacheDir: filepath.Join(workspace.CacheDir(root), runID),
 			OutputDir: versionDir, OutputFile: outFile, RawConfig: bConfig, Samples: bSamples, RunID: runID,
 		}
 		plan, err := tr.Plan(req)
@@ -243,7 +249,6 @@ Examples:
 			if err := captionDataset(cmd, p, interp, dsDir, bTrigger, dsSummary.ImageCount); err != nil {
 				return err
 			}
-			plan.Req.CaptionsHaveTrigger = bTrigger != ""
 			if interactive && !confirmCaptions(p, dsDir) {
 				return output.Errorf(output.ExitError, "aborted", "review the captions and re-run", "aborted after caption review")
 			}

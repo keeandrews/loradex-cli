@@ -35,10 +35,10 @@ type Entry struct {
 // where one exists, so `loradex build --base <id>` lines up with the registry.
 var builtin = []Entry{
 	{
-		ID: "flux2-klein", Name: "FLUX.2 Klein (4B)", Arch: "flux2",
-		Repo: "black-forest-labs/FLUX.2-klein-4B", Format: "diffusers",
+		ID: "flux2-klein", Name: "FLUX.2 Klein (base 4B)", Arch: "flux2",
+		Repo: "black-forest-labs/FLUX.2-klein-base-4B", Format: "diffusers",
 		License: "FLUX.2-klein License", SizeGB: 24, Gated: false,
-		Desc: "Black Forest Labs FLUX.2 Klein 4B — open weights, fits Apple Silicon",
+		Desc: "FLUX.2 Klein base 4B — open weights, the variant ai-toolkit trains LoRAs on",
 	},
 	{
 		ID: "flux2-klein-9b", Name: "FLUX.2 Klein (9B)", Arch: "flux2",

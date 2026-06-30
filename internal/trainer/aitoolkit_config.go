@@ -43,7 +43,8 @@ type atTrain struct {
 
 type atModel struct {
 	NameOrPath string `yaml:"name_or_path"`
-	IsFlux     bool   `yaml:"is_flux,omitempty"`
+	Arch       string `yaml:"arch,omitempty"`    // ai-toolkit architecture selector (newer models)
+	IsFlux     bool   `yaml:"is_flux,omitempty"` // legacy FLUX.1 flag
 	Quantize   bool   `yaml:"quantize,omitempty"`
 }
 
@@ -79,13 +80,21 @@ type atJob struct {
 	Config atConfig `yaml:"config"`
 }
 
-// baseCheckpoints maps loradex base ids to ai-toolkit model ids/paths.
-// TODO(verify-schema): confirm exact model ids for the installed ai-toolkit.
+// baseCheckpoints maps loradex base ids to the model ai-toolkit loads. FLUX.2
+// Klein uses the *base* 4B checkpoint — that's what ai-toolkit's flux2_klein_4b
+// loader expects (flux-2-klein-base-4b.safetensors) and the right variant to
+// train LoRAs on.
 var baseCheckpoints = map[string]string{
-	"flux2-klein": "black-forest-labs/FLUX.2-klein-4B",
+	"flux2-klein": "black-forest-labs/FLUX.2-klein-base-4B",
 	"flux1":       "black-forest-labs/FLUX.1-dev",
 	"sdxl":        "stabilityai/stable-diffusion-xl-base-1.0",
 	"sd15":        "runwayml/stable-diffusion-v1-5",
+}
+
+// baseArch maps a loradex base to ai-toolkit's architecture selector. Bases not
+// listed are auto-detected by ai-toolkit (or use the legacy is_flux flag).
+var baseArch = map[string]string{
+	"flux2-klein": "flux2_klein_4b",
 }
 
 func resolveCheckpoint(base string) string {
@@ -95,7 +104,11 @@ func resolveCheckpoint(base string) string {
 	return base
 }
 
-func isFlux(base string) bool { return base == "flux2-klein" || base == "flux1" }
+func archForBase(base string) string { return baseArch[base] }
+
+// isFlux reports whether a base uses the legacy FLUX.1 (is_flux) loader. FLUX.2
+// uses the arch selector instead, so it is not "is_flux".
+func isFlux(base string) bool { return base == "flux1" }
 
 func samplePrompts(req Request, n int) []string {
 	trig := req.Trigger
@@ -141,7 +154,7 @@ func buildConfigYAML(req Request) ([]byte, error) {
 			LR: p.LR, Optimizer: p.Optimizer, Dtype: p.Precision, TrainTextEncoder: p.TrainTextEncoder,
 			GradientCheckpointing: true, Seed: p.Seed, EnableBucket: p.Bucketing,
 		},
-		Model:  atModel{NameOrPath: req.BaseCheckpoint, IsFlux: isFlux(req.Base), Quantize: p.Quantize},
+		Model:  atModel{NameOrPath: req.BaseCheckpoint, Arch: archForBase(req.Base), IsFlux: isFlux(req.Base), Quantize: p.Quantize},
 		Sample: sample,
 		Extra:  extra,
 	}

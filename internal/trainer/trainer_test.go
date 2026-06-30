@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,6 +177,54 @@ exit 0
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "final.safetensors")); err != nil {
 		t.Errorf("output not collected: %v", err)
+	}
+}
+
+func TestTrain_ReadsCarriageReturnProgressAndLocksTrainingBar(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src.safetensors")
+	writeFakeSafetensors(t, src)
+	t.Setenv("FAKE_SAFETENSORS", src)
+
+	// Realistic stream: pre-training tqdm bars redraw with \r ("2/5"), then the
+	// 1000-step training bar redraws with \r. The reader must surface the \r
+	// updates and the step counter must lock onto the 1000-step bar.
+	home, python := setupFakeTrainer(t, `#!/bin/sh
+out="$(dirname "$2")/model.safetensors"
+cp "$FAKE_SAFETENSORS" "$out"
+printf 'Loading checkpoint shards: 2/5\r'
+printf 'Loading checkpoint shards: 5/5\r\n'
+printf '  0%%| | 0/1000 [00:00<?]\r'
+printf ' 50%%|##### | 500/1000 [00:30<00:30] loss: 0.08\r'
+printf '100%%|##########| 1000/1000 [01:00<00:00] loss: 0.04\r\n'
+printf 'done\n'
+exit 0
+`)
+	Configure(home, python)
+	req := Request{Name: "x", Base: "flux2-klein", BaseCheckpoint: "ckpt", DatasetDir: t.TempDir(),
+		Profile: profile.Profile{Rank: 16, Alpha: 16, Steps: 1000, LR: 1e-4, Optimizer: "adafactor", Precision: "bf16", Resolution: 1024, Batch: 1, GradAccum: 1, SaveEvery: 250},
+		Device:  "cpu", CacheDir: t.TempDir(), OutputDir: t.TempDir(), OutputFile: "final.safetensors"}
+	plan, _ := (AIToolkit{}).Plan(req)
+
+	var mu sync.Mutex
+	var lastStep, lastTotal, maxTotal int
+	_, err := (AIToolkit{}).Train(context.Background(), plan, func(pr Progress) {
+		mu.Lock()
+		defer mu.Unlock()
+		if pr.TotalSteps > 0 {
+			lastStep, lastTotal = pr.Step, pr.TotalSteps
+			if pr.TotalSteps > maxTotal {
+				maxTotal = pr.TotalSteps
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("Train: %v", err)
+	}
+	if maxTotal != 1000 {
+		t.Errorf("max total = %d, want 1000 (should lock onto the training bar, not the 2/5 pre-phase)", maxTotal)
+	}
+	if lastStep != 1000 || lastTotal != 1000 {
+		t.Errorf("final progress = %d/%d, want 1000/1000 (must read the \\r-updated training bar)", lastStep, lastTotal)
 	}
 }
 

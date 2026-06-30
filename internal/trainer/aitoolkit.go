@@ -2,6 +2,7 @@ package trainer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,6 +19,27 @@ import (
 	"github.com/keeandrews/loradex-cli/internal/output"
 	"github.com/keeandrews/loradex-cli/internal/safetensors"
 )
+
+// scanProgressLines splits on \r as well as \n so tqdm-style progress bars
+// (which redraw in place with a carriage return and no newline) are surfaced as
+// they update — otherwise the live training step counter is buffered until the
+// run ends and the UI looks frozen.
+func scanProgressLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		adv := i + 1
+		if data[i] == '\r' && adv < len(data) && data[adv] == '\n' {
+			adv++ // treat \r\n as a single break
+		}
+		return adv, data[:i], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
 
 // AIToolkit orchestrates the ai-toolkit trainer as a subprocess.
 type AIToolkit struct{}
@@ -120,25 +142,35 @@ func (a AIToolkit) Train(ctx context.Context, plan Plan, onProgress func(Progres
 
 	start := time.Now()
 	var lastLoss float64
-	var lastStep, totalSteps int
+	var lastStep, totalSteps, maxTotal int
 	var mu sync.Mutex
 	tail := make([]string, 0, 40) // ring buffer of recent output for error reporting
 	scan := func(r io.Reader) {
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		sc.Split(scanProgressLines)
 		for sc.Scan() {
-			line := sc.Text()
-			mu.Lock()
-			tail = append(tail, line)
-			if len(tail) > 40 {
-				tail = tail[len(tail)-40:]
+			line := strings.TrimRight(sc.Text(), "\r\n")
+			if strings.TrimSpace(line) != "" {
+				mu.Lock()
+				tail = append(tail, line)
+				if len(tail) > 40 {
+					tail = tail[len(tail)-40:]
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
 			pr := Progress{Raw: line}
 			if m := reStep.FindStringSubmatch(line); m != nil {
-				pr.Step, _ = strconv.Atoi(m[1])
-				pr.TotalSteps, _ = strconv.Atoi(m[2])
-				lastStep, totalSteps = pr.Step, pr.TotalSteps
+				step, _ := strconv.Atoi(m[1])
+				tot, _ := strconv.Atoi(m[2])
+				// Lock onto the largest bar: the 1000-step training bar dominates
+				// pre-training (quantize/cache "2/5") and per-sample (e.g. "0/25")
+				// bars, so those never hijack the step counter.
+				if tot >= maxTotal {
+					maxTotal = tot
+					pr.Step, pr.TotalSteps = step, tot
+					lastStep, totalSteps = step, tot
+				}
 			}
 			if m := reLoss.FindStringSubmatch(line); m != nil {
 				pr.Loss, _ = strconv.ParseFloat(m[1], 64)
@@ -242,14 +274,17 @@ func (a AIToolkit) Generate(ctx context.Context, req GenerateRequest, onProgress
 	scan := func(r io.Reader) {
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		sc.Split(scanProgressLines)
 		for sc.Scan() {
-			line := sc.Text()
-			mu.Lock()
-			tail = append(tail, line)
-			if len(tail) > 40 {
-				tail = tail[len(tail)-40:]
+			line := strings.TrimRight(sc.Text(), "\r\n")
+			if strings.TrimSpace(line) != "" {
+				mu.Lock()
+				tail = append(tail, line)
+				if len(tail) > 40 {
+					tail = tail[len(tail)-40:]
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
 			if onProgress != nil {
 				onProgress(GenerateProgress{Raw: line, Loaded: reGenerating.MatchString(line)})
 			}

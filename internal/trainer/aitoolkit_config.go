@@ -48,9 +48,10 @@ type atTrain struct {
 
 type atModel struct {
 	NameOrPath string `yaml:"name_or_path"`
-	Arch       string `yaml:"arch,omitempty"`    // ai-toolkit architecture selector (newer models)
-	IsFlux     bool   `yaml:"is_flux,omitempty"` // legacy FLUX.1 flag
-	Quantize   bool   `yaml:"quantize,omitempty"`
+	Arch       string `yaml:"arch,omitempty"`      // ai-toolkit architecture selector (newer models)
+	IsFlux     bool   `yaml:"is_flux,omitempty"`   // legacy FLUX.1 flag
+	Quantize   bool   `yaml:"quantize,omitempty"`  //
+	LoRAPath   string `yaml:"lora_path,omitempty"` // fuse a trained LoRA at load (generation only)
 }
 
 type atSample struct {
@@ -183,4 +184,87 @@ func buildConfigYAML(req Request) ([]byte, error) {
 		Extra:  extra,
 	}
 	return yaml.Marshal(atJob{Job: "extension", Config: atConfig{Name: req.Name, Process: []atProcess{proc}}})
+}
+
+// --- generation (ai-toolkit "generate" job) ---
+
+type atGenerate struct {
+	Sampler       string  `yaml:"sampler"`
+	Width         int     `yaml:"width"`
+	Height        int     `yaml:"height"`
+	SampleSteps   int     `yaml:"sample_steps"`
+	GuidanceScale float64 `yaml:"guidance_scale"`
+	Seed          int     `yaml:"seed"`
+	Neg           string  `yaml:"neg,omitempty"`
+	NumRepeats    int     `yaml:"num_repeats"`
+	Ext           string  `yaml:"ext"`
+	// Prompts is either a []string of inline prompts or a string path to a
+	// newline-delimited prompts file — ai-toolkit's GenerateProcess accepts both.
+	Prompts any `yaml:"prompts"`
+}
+
+type atGenProcess struct {
+	Type         string     `yaml:"type"` // "to_folder"
+	OutputFolder string     `yaml:"output_folder"`
+	Device       string     `yaml:"device"`
+	Dtype        string     `yaml:"dtype"`
+	Model        atModel    `yaml:"model"`
+	Generate     atGenerate `yaml:"generate"`
+}
+
+type atGenConfig struct {
+	Name    string         `yaml:"name"`
+	Process []atGenProcess `yaml:"process"`
+}
+
+type atGenJob struct {
+	Job    string      `yaml:"job"` // "generate"
+	Config atGenConfig `yaml:"config"`
+}
+
+// buildGenerateYAML renders an ai-toolkit "generate" job: it loads the same base
+// the LoRA was trained on (arch selector pulls the TE+VAE, exactly as in
+// training), fuses the trained LoRA via model.lora_path, and renders images to
+// OutputDir. Prompts may be inline or a file path.
+func buildGenerateYAML(req GenerateRequest) ([]byte, error) {
+	sampler := req.Sampler
+	if sampler == "" {
+		if isFluxFamily(req.Base) {
+			sampler = "flowmatch"
+		} else {
+			sampler = "ddpm"
+		}
+	}
+	var prompts any
+	if req.PromptFile != "" {
+		prompts = req.PromptFile // GenerateProcess reads lines from an existing path
+	} else {
+		prompts = req.Prompts
+	}
+	proc := atGenProcess{
+		Type:         "to_folder",
+		OutputFolder: req.OutputDir,
+		Device:       req.Device,
+		Dtype:        req.Precision,
+		Model: atModel{
+			NameOrPath: req.BaseCheckpoint,
+			Arch:       archForBase(req.Base),
+			IsFlux:     isFlux(req.Base),
+			Quantize:   req.Quantize,
+			LoRAPath:   req.LoRAPath,
+		},
+		Generate: atGenerate{
+			Sampler:       sampler,
+			Width:         req.Width,
+			Height:        req.Height,
+			SampleSteps:   req.Steps,
+			GuidanceScale: req.Guidance,
+			Seed:          req.Seed,
+			Neg:           req.Negative,
+			NumRepeats:    req.Count,
+			Ext:           "png",
+			Prompts:       prompts,
+		},
+	}
+	return yaml.Marshal(atGenJob{Job: "generate", Config: atGenConfig{Name: req.Name, Process: []atGenProcess{proc}}})
 }

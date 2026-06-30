@@ -90,6 +90,40 @@ type Result struct {
 	Stopped     bool // ctrl-c → resumable
 }
 
+// GenerateRequest is a fully-resolved image-generation request. It loads the
+// same base the LoRA trained on and fuses the LoRA at load.
+type GenerateRequest struct {
+	Name           string
+	Base           string
+	BaseCheckpoint string   // name_or_path (the base model dir, as in training)
+	LoRAPath       string   // trained .safetensors to fuse
+	Prompts        []string // inline prompts (ignored when PromptFile is set)
+	PromptFile     string   // path to a newline-delimited prompts file
+	Negative       string
+	Width          int
+	Height         int
+	Steps          int     // diffusion steps (sample_steps)
+	Guidance       float64 // guidance scale
+	Seed           int     // -1 = random per image
+	Count          int     // images per prompt (num_repeats)
+	Sampler        string  // "" → flowmatch for FLUX, else ddpm
+	Precision      string  // dtype, e.g. bf16
+	Quantize       bool
+	Device         string
+	OutputDir      string
+}
+
+// GenerateProgress is a streamed generation update (raw trainer output line).
+type GenerateProgress struct {
+	Raw    string
+	Loaded bool // true once the model has finished loading and rendering begins
+}
+
+// GenerateResult lists the rendered images (absolute paths).
+type GenerateResult struct {
+	Images []string
+}
+
 // Trainer is the backend interface. cmd/build depends only on this.
 type Trainer interface {
 	Name() string

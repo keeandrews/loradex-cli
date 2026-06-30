@@ -61,6 +61,58 @@ func TestBuildConfig_NoInjection(t *testing.T) {
 	}
 }
 
+func TestBuildGenerate_FluxDefaultsAndLoRA(t *testing.T) {
+	req := GenerateRequest{
+		Name: "g", Base: "flux2-klein", BaseCheckpoint: "/models/flux2-klein", LoRAPath: "/v1/lora.safetensors",
+		Prompts: []string{"ohwxman as an astronaut"}, Width: 1024, Height: 1024, Steps: 25,
+		Guidance: 4.0, Seed: -1, Count: 2, Precision: "bf16", Quantize: true, Device: "mps", OutputDir: "/out",
+	}
+	data, err := buildGenerateYAML(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := yaml.Unmarshal(data, &got); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+	if got["job"] != "generate" {
+		t.Errorf("job = %v, want generate", got["job"])
+	}
+	proc := got["config"].(map[string]any)["process"].([]any)[0].(map[string]any)
+	model := proc["model"].(map[string]any)
+	if model["arch"] != "flux2_klein_4b" {
+		t.Errorf("arch = %v, want flux2_klein_4b", model["arch"])
+	}
+	if model["lora_path"] != req.LoRAPath {
+		t.Errorf("lora_path = %v, want %s", model["lora_path"], req.LoRAPath)
+	}
+	gen := proc["generate"].(map[string]any)
+	if gen["sampler"] != "flowmatch" {
+		t.Errorf("sampler = %v, want flowmatch (FLUX default)", gen["sampler"])
+	}
+	if prompts, ok := gen["prompts"].([]any); !ok || len(prompts) != 1 {
+		t.Errorf("inline prompts not rendered as a list: %v", gen["prompts"])
+	}
+}
+
+func TestBuildGenerate_PromptFileTakesPrecedence(t *testing.T) {
+	req := GenerateRequest{
+		Name: "g", Base: "flux2-klein", BaseCheckpoint: "/m", LoRAPath: "/l.safetensors",
+		Prompts: []string{"ignored"}, PromptFile: "/tmp/prompts.txt", Width: 1024, Height: 1024,
+		Steps: 20, Guidance: 4, Count: 1, OutputDir: "/out",
+	}
+	data, err := buildGenerateYAML(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = yaml.Unmarshal(data, &got)
+	gen := got["config"].(map[string]any)["process"].([]any)[0].(map[string]any)["generate"].(map[string]any)
+	if gen["prompts"] != "/tmp/prompts.txt" {
+		t.Errorf("prompts = %v, want the file path", gen["prompts"])
+	}
+}
+
 func TestDetect_MissingHome(t *testing.T) {
 	if _, err := (AIToolkit{}).Detect(Config{}); err == nil {
 		t.Error("expected error when home is unset")

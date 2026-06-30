@@ -198,6 +198,112 @@ func (a AIToolkit) Train(ctx context.Context, plan Plan, onProgress func(Progres
 	}, nil
 }
 
+var reGenerating = regexp.MustCompile(`(?i)generating\s+\d+\s+image`)
+
+// GenerateConfig renders the ai-toolkit generate-job config for a request,
+// without running anything (used by `loradex generate --dry-run`).
+func (a AIToolkit) GenerateConfig(req GenerateRequest) ([]byte, error) {
+	return buildGenerateYAML(req)
+}
+
+// Generate renders images from a trained LoRA by driving ai-toolkit's "generate"
+// job (same model loader as training, LoRA fused via model.lora_path). It writes
+// a generate config, runs run.py, relays output, and returns the rendered image
+// paths. Honors ctx cancellation.
+func (a AIToolkit) Generate(ctx context.Context, req GenerateRequest, onProgress func(GenerateProgress)) (GenerateResult, error) {
+	if err := os.MkdirAll(req.OutputDir, 0o755); err != nil {
+		return GenerateResult{}, err
+	}
+	data, err := buildGenerateYAML(req)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	configPath := filepath.Join(req.OutputDir, "generate.yaml")
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		return GenerateResult{}, err
+	}
+
+	python := ResolvePython(Config{Home: trainerHome, Python: trainerPython})
+	cmd := exec.CommandContext(ctx, python, "run.py", configPath)
+	cmd.Dir = trainerHome
+	cmd.Env = childEnv(req.Device)
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 30 * time.Second
+
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		return GenerateResult{}, &output.CLIError{Code: output.ExitError, CodeName: "generate_start_failed", Message: "failed to start ai-toolkit: " + err.Error()}
+	}
+
+	var mu sync.Mutex
+	tail := make([]string, 0, 40)
+	scan := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			mu.Lock()
+			tail = append(tail, line)
+			if len(tail) > 40 {
+				tail = tail[len(tail)-40:]
+			}
+			mu.Unlock()
+			if onProgress != nil {
+				onProgress(GenerateProgress{Raw: line, Loaded: reGenerating.MatchString(line)})
+			}
+		}
+	}
+	done := make(chan struct{}, 2)
+	go func() { scan(stdout); done <- struct{}{} }()
+	go func() { scan(stderr); done <- struct{}{} }()
+	<-done
+	<-done
+
+	err = cmd.Wait()
+	if ctx.Err() != nil {
+		return GenerateResult{}, &output.CLIError{Code: output.ExitError, CodeName: "cancelled", Message: "generation cancelled"}
+	}
+	if err != nil {
+		mu.Lock()
+		recent := strings.Join(tail[max(0, len(tail)-12):], "\n  ")
+		mu.Unlock()
+		return GenerateResult{}, &output.CLIError{Code: output.ExitError, CodeName: "generate_failed",
+			Message: "ai-toolkit exited with an error:\n  " + recent,
+			Hint:    "re-run with --verbose for the full trainer output"}
+	}
+
+	images := collectImages(req.OutputDir, start)
+	if len(images) == 0 {
+		return GenerateResult{}, &output.CLIError{Code: output.ExitError, CodeName: "no_images",
+			Message: "generation finished but produced no images", Hint: "re-run with --verbose to see the trainer output"}
+	}
+	return GenerateResult{Images: images}, nil
+}
+
+// collectImages returns image files under dir created at/after start, sorted.
+func collectImages(dir string, start time.Time) []string {
+	var out []string
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".png", ".jpg", ".jpeg", ".webp":
+		default:
+			return nil
+		}
+		if fi, e := d.Info(); e == nil && fi.ModTime().Before(start.Add(-time.Second)) {
+			return nil // pre-existing image, not from this run
+		}
+		out = append(out, p)
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
 // trainerHome/trainerPython are set by the build command before Train (so the
 // adapter stays stateless re: where ai-toolkit lives).
 var (

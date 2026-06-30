@@ -50,30 +50,46 @@ func TestResolve_MPSLowRAMKeepsMemorySavers(t *testing.T) {
 	}
 }
 
-func TestResolve_MPSHighRAMKeepsSaversByDefault(t *testing.T) {
-	// Even with ample RAM, memory-savers stay on by default: unified memory is
-	// shared with the OS/other apps, and overflowing it into swap is far slower
-	// than the compute the savers cost (measured: FLUX.2 4B with checkpointing
-	// off thrashes swap and climbs to ~80 s/it on a 48 GB M3 Max).
+func TestResolve_MPSHighRAMFavorsSpeedForSmallModel(t *testing.T) {
+	// With ample RAM and a model that fits unquantized, drop the savers for
+	// speed — safe because caching frees the encoders during training (measured:
+	// FLUX.2 4B at 512px ~4.4 s/it on the speed path vs ~27 s/it with savers on,
+	// no steady-state swap, on a 48 GB M3 Max).
 	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 48, ImageCount: 30})
-	if !p.Quantize || !p.GradientCheckpointing {
-		t.Errorf("high-RAM MPS should still default savers on, got q=%v gc=%v", p.Quantize, p.GradientCheckpointing)
+	if p.Quantize {
+		t.Error("high-RAM small-model MPS should disable quantize")
 	}
-	if p.GradAccum < 4 {
-		t.Errorf("high-RAM MPS grad_accum = %d, want >=4", p.GradAccum)
+	if p.GradientCheckpointing {
+		t.Error("high-RAM small-model MPS should disable gradient checkpointing")
+	}
+	if p.GradAccum != 1 {
+		t.Errorf("high-RAM speed path grad_accum = %d, want 1", p.GradAccum)
 	}
 }
 
-func TestResolve_UserCanDisableSavers(t *testing.T) {
-	// The speed path is opt-in: explicit flags must override the safe defaults.
-	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 48, Flags: map[string]any{
-		"quantize": false, "gradient_checkpointing": false,
-	}, ImageCount: 30})
-	if p.Quantize {
-		t.Error("explicit --quantize=false must override the default")
+func TestResolve_MPSHighRAMKeepsSaversForLargeModel(t *testing.T) {
+	// FLUX.1 is ~12B and cannot fit unquantized in 48 GB, so the savers stay on
+	// even with ample RAM.
+	p, _ := Resolve("flux1", Layers{Device: "mps", MemoryGB: 48, ImageCount: 30})
+	if !p.Quantize || !p.GradientCheckpointing {
+		t.Errorf("FLUX.1 must keep savers on regardless of RAM, got q=%v gc=%v", p.Quantize, p.GradientCheckpointing)
 	}
-	if p.GradientCheckpointing {
-		t.Error("explicit --gradient-checkpointing=false must override the default")
+	if p.GradAccum < 4 {
+		t.Errorf("FLUX.1 grad_accum = %d, want >=4", p.GradAccum)
+	}
+}
+
+func TestResolve_UserCanReEnableSavers(t *testing.T) {
+	// Explicit flags must override the high-RAM speed default (e.g. a user whose
+	// machine is also under heavy memory load wants the savers back).
+	p, _ := Resolve("flux2-klein", Layers{Device: "mps", MemoryGB: 48, Flags: map[string]any{
+		"quantize": true, "gradient_checkpointing": true,
+	}, ImageCount: 30})
+	if !p.Quantize {
+		t.Error("explicit --quantize=true must override the speed default")
+	}
+	if !p.GradientCheckpointing {
+		t.Error("explicit --gradient-checkpointing=true must override the speed default")
 	}
 }
 

@@ -58,6 +58,22 @@ type Layers struct {
 
 func isFluxBase(base string) bool { return base == "flux2-klein" || base == "flux1" }
 
+// fastPathRAMGB is the unified-memory level at/above which MPS training drops the
+// memory-savers (quantization, gradient checkpointing) for speed. This is only
+// safe BECAUSE latent + text-embedding caching frees the VAE and text encoder
+// during training (see trainer.PerfPlanFor) — that headroom is what lets the
+// unquantized transformer fit. Calibrated on a 48 GB M3 Max, where FLUX.2 Klein
+// 4B at 512px measured ~4.4 s/it on the speed path with no steady-state swap,
+// vs ~27 s/it quantized+checkpointed and a degrading 22→80 s/it with the savers
+// off but caching absent. The original 32 GB threshold here disabled the savers
+// without caching, so it overflowed memory and thrashed.
+const fastPathRAMGB = 48
+
+// speedPathFits reports whether a base is small enough to train unquantized in
+// fastPathRAMGB of unified memory. FLUX.1 is ~12B (~24 GB bf16) and must stay
+// quantized; everything else here fits with caching freeing the encoders.
+func speedPathFits(base string) bool { return base != "flux1" }
+
 // Resolve merges layers into a concrete Profile and returns it with warnings.
 func Resolve(base string, l Layers) (Profile, []string) {
 	var warnings []string
@@ -67,19 +83,27 @@ func Resolve(base string, l Layers) (Profile, []string) {
 	}
 
 	// Apple-Silicon (MPS) DEFAULTS — applied before the user layers so explicit
-	// flags/config still win. Memory-savers default ON: unified memory is shared
-	// with the OS and other apps, and overflowing it forces swap/compressor
-	// thrash that is far slower than the compute these savers cost. Empirically a
-	// 48 GB M3 Max running FLUX.2 Klein 4B with checkpointing OFF swaps ~6 GB per
-	// 25 s and climbs to ~80 s/it. The savers are overridable via --quantize /
-	// --gradient-checkpointing / --grad-accum for machines with headroom to spare.
+	// flags/config still win. The tradeoff is driven by available memory, and it
+	// is only valid because latent + text-embedding caching frees the encoders
+	// during training (always-on in trainer.PerfPlanFor).
 	if l.Device == "mps" {
-		p.GradientCheckpointing = true
-		if isFluxBase(base) {
-			p.Quantize = true
-		}
-		if p.GradAccum < 4 {
-			p.GradAccum = 4
+		if l.MemoryGB >= fastPathRAMGB && speedPathFits(base) {
+			// Ample memory + a model that fits unquantized: prefer speed. With the
+			// encoders cached out, quantization (per-matmul dequant on MPS) and
+			// gradient checkpointing (forward recompute) are pure per-step overhead.
+			p.Quantize = false
+			p.GradientCheckpointing = false
+			p.GradAccum = 1
+		} else {
+			// Limited memory, or a model too large to fit unquantized: keep the
+			// memory-savers on so it fits without swapping.
+			p.GradientCheckpointing = true
+			if isFluxBase(base) {
+				p.Quantize = true
+			}
+			if p.GradAccum < 4 {
+				p.GradAccum = 4
+			}
 		}
 	}
 

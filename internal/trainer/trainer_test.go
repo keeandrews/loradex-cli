@@ -62,6 +62,83 @@ func TestBuildConfig_NoInjection(t *testing.T) {
 	}
 }
 
+func TestBuildConfig_PerfCaching(t *testing.T) {
+	baseProfile := profile.Profile{
+		Rank: 16, Alpha: 16, Steps: 100, LR: 1e-4, Optimizer: "adafactor", Precision: "bf16",
+		Resolution: 512, Batch: 1, GradAccum: 4, SaveEvery: 250, Seed: 42, Bucketing: true,
+		Quantize: true, GradientCheckpointing: true,
+	}
+	// parse renders a Request and returns its process + train sub-maps.
+	parse := func(t *testing.T, req Request) (proc, train, ds map[string]any) {
+		t.Helper()
+		data, err := buildConfigYAML(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := yaml.Unmarshal(data, &got); err != nil {
+			t.Fatalf("invalid YAML: %v", err)
+		}
+		proc = got["config"].(map[string]any)["process"].([]any)[0].(map[string]any)
+		train = proc["train"].(map[string]any)
+		ds = proc["datasets"].([]any)[0].(map[string]any)
+		return proc, train, ds
+	}
+
+	t.Run("latents cached and TE cached when captions are self-contained", func(t *testing.T) {
+		// Generated captions bake in the trigger, so trigger_word is empty and
+		// per-caption embeds can be cached losslessly.
+		_, train, ds := parse(t, Request{
+			Name: "x", Base: "flux2-klein", BaseCheckpoint: "ckpt", DatasetDir: "/d",
+			Trigger: "ohwxman", CaptionsHaveTrigger: true, Samples: 0, Profile: baseProfile,
+		})
+		if ds["cache_latents_to_disk"] != true {
+			t.Errorf("cache_latents_to_disk = %v, want true", ds["cache_latents_to_disk"])
+		}
+		if train["cache_text_embeddings"] != true {
+			t.Errorf("cache_text_embeddings = %v, want true (self-contained captions)", train["cache_text_embeddings"])
+		}
+		if train["disable_sampling"] != true {
+			t.Errorf("disable_sampling = %v, want true (no samples requested)", train["disable_sampling"])
+		}
+	})
+
+	t.Run("TE not cached when a dynamic trigger word is injected", func(t *testing.T) {
+		_, train, ds := parse(t, Request{
+			Name: "x", Base: "flux2-klein", BaseCheckpoint: "ckpt", DatasetDir: "/d",
+			Trigger: "ohwxman", CaptionsHaveTrigger: false, Samples: 0, Profile: baseProfile,
+		})
+		if ds["cache_latents_to_disk"] != true {
+			t.Errorf("latent caching should still be on, got %v", ds["cache_latents_to_disk"])
+		}
+		if _, ok := train["cache_text_embeddings"]; ok {
+			t.Errorf("cache_text_embeddings must be off with a live trigger_word, got %v", train["cache_text_embeddings"])
+		}
+	})
+
+	t.Run("TE not cached when training the text encoder", func(t *testing.T) {
+		p := baseProfile
+		p.TrainTextEncoder = true
+		_, train, _ := parse(t, Request{
+			Name: "x", Base: "flux2-klein", BaseCheckpoint: "ckpt", DatasetDir: "/d",
+			CaptionsHaveTrigger: true, Samples: 0, Profile: p,
+		})
+		if _, ok := train["cache_text_embeddings"]; ok {
+			t.Errorf("cache_text_embeddings must be off when training the TE, got %v", train["cache_text_embeddings"])
+		}
+	})
+
+	t.Run("sampling not disabled when samples are requested", func(t *testing.T) {
+		_, train, _ := parse(t, Request{
+			Name: "x", Base: "flux2-klein", BaseCheckpoint: "ckpt", DatasetDir: "/d",
+			CaptionsHaveTrigger: true, Samples: 2, Profile: baseProfile,
+		})
+		if _, ok := train["disable_sampling"]; ok {
+			t.Errorf("disable_sampling must be off when samples requested, got %v", train["disable_sampling"])
+		}
+	})
+}
+
 func TestBuildGenerate_FluxDefaultsAndLoRA(t *testing.T) {
 	req := GenerateRequest{
 		Name: "g", Base: "flux2-klein", BaseCheckpoint: "/models/flux2-klein", LoRAPath: "/v1/lora.safetensors",

@@ -24,6 +24,11 @@ type atDataset struct {
 	FolderPath string `yaml:"folder_path"`
 	CaptionExt string `yaml:"caption_ext"`
 	Resolution int    `yaml:"resolution"`
+	// CacheLatentsToDisk: VAE-encode every image once, store the latents on disk,
+	// and reload them each step instead of re-encoding. Lets ai-toolkit move the
+	// VAE off-device during training — less unified memory, no per-step VAE pass.
+	// Force-disabled by ai-toolkit if the dataset has augmentations (we set none).
+	CacheLatentsToDisk bool `yaml:"cache_latents_to_disk,omitempty"`
 }
 
 type atSave struct {
@@ -44,6 +49,15 @@ type atTrain struct {
 	Seed                      int     `yaml:"seed"`
 	EnableBucket              bool    `yaml:"enable_bucket"`
 	NoiseScheduler            string  `yaml:"noise_scheduler,omitempty"` // "flowmatch" for FLUX; ai-toolkit defaults to ddpm
+	// CacheTextEmbeddings: encode every caption once, store the prompt embeds on
+	// disk, and unload the text encoder for the rest of the run. Only set when no
+	// trigger_word is injected dynamically (captions are self-contained) — caching
+	// freezes the embeddings, so a dynamic trigger would never reach them.
+	CacheTextEmbeddings bool `yaml:"cache_text_embeddings,omitempty"`
+	// DisableSampling: skip all sample-image generation, including the pre-train
+	// baseline sample that otherwise loads the text encoder and runs inference
+	// before step 1. Set when the run requested no samples.
+	DisableSampling bool `yaml:"disable_sampling,omitempty"`
 }
 
 type atModel struct {
@@ -141,6 +155,37 @@ func samplePrompts(req Request, n int) []string {
 	return all[:n]
 }
 
+// effectiveTrigger is the trigger_word ai-toolkit should inject. When we
+// generated the captions, the trigger is already baked into each .txt, so it
+// must be empty to avoid double-prepending.
+func effectiveTrigger(req Request) string {
+	if req.CaptionsHaveTrigger {
+		return ""
+	}
+	return req.Trigger
+}
+
+// PerfPlan summarizes the memory/speed optimizations applied to a training run.
+type PerfPlan struct {
+	CacheLatents        bool // VAE-encode images once to disk, then free the VAE
+	CacheTextEmbeddings bool // encode captions once, then unload the text encoder
+	DisableSampling     bool // skip sampling, including the pre-train baseline sample
+}
+
+// PerfPlanFor derives the optimizations enabled for a request — the single
+// source of truth shared by config generation and the build plan. Latent
+// caching is always safe (no augmentations are configured). Text-embedding
+// caching unloads the TE but freezes the embeds, so it is gated on
+// self-contained captions (no dynamic trigger_word) and not training the TE.
+// Sampling is skipped when the run requested no samples.
+func PerfPlanFor(req Request) PerfPlan {
+	return PerfPlan{
+		CacheLatents:        true,
+		CacheTextEmbeddings: effectiveTrigger(req) == "" && !req.Profile.TrainTextEncoder,
+		DisableSampling:     req.Samples <= 0,
+	}
+}
+
 // buildConfigYAML renders the ai-toolkit config for a request.
 func buildConfigYAML(req Request) ([]byte, error) {
 	p := req.Profile
@@ -162,10 +207,8 @@ func buildConfigYAML(req Request) ([]byte, error) {
 	}
 	// When we generated captions, the trigger is already baked into each .txt —
 	// don't let ai-toolkit prepend it again.
-	triggerWord := req.Trigger
-	if req.CaptionsHaveTrigger {
-		triggerWord = ""
-	}
+	triggerWord := effectiveTrigger(req)
+	perf := PerfPlanFor(req)
 	proc := atProcess{
 		Type:           "sd_trainer",
 		TrainingFolder: req.CacheDir,
@@ -173,11 +216,12 @@ func buildConfigYAML(req Request) ([]byte, error) {
 		TriggerWord:    triggerWord,
 		Network:        atNetwork{Type: "lora", Linear: p.Rank, LinearAlpha: p.Alpha},
 		Save:           atSave{Dtype: p.Precision, SaveEvery: p.SaveEvery, MaxStepSavesToKeep: 4},
-		Datasets:       []atDataset{{FolderPath: req.DatasetDir, CaptionExt: "txt", Resolution: p.Resolution}},
+		Datasets:       []atDataset{{FolderPath: req.DatasetDir, CaptionExt: "txt", Resolution: p.Resolution, CacheLatentsToDisk: perf.CacheLatents}},
 		Train: atTrain{
 			Steps: p.Steps, BatchSize: p.Batch, GradientAccumulationSteps: p.GradAccum,
 			LR: p.LR, Optimizer: p.Optimizer, Dtype: p.Precision, TrainTextEncoder: p.TrainTextEncoder,
 			GradientCheckpointing: p.GradientCheckpointing, Seed: p.Seed, EnableBucket: p.Bucketing, NoiseScheduler: noiseScheduler,
+			CacheTextEmbeddings: perf.CacheTextEmbeddings, DisableSampling: perf.DisableSampling,
 		},
 		Model:  atModel{NameOrPath: req.BaseCheckpoint, Arch: archForBase(req.Base), IsFlux: isFlux(req.Base), Quantize: p.Quantize},
 		Sample: sample,

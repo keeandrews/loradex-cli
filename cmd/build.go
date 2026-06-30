@@ -414,6 +414,8 @@ func printBuildPlan(p *output.Printer, proj *workspace.Project, cat *catalog.Cat
 	p.Info("    network    LoRA rank %d / alpha %d", prof.Rank, prof.Alpha)
 	p.Info("    steps      %d   optimizer %s   lr %g   precision %s", prof.Steps, prof.Optimizer, prof.LR, prof.Precision)
 	p.Info("    speed      quantize %s · grad-checkpoint %s · grad-accum %d", onOff(prof.Quantize), onOff(prof.GradientCheckpointing), prof.GradAccum)
+	perf := trainer.PerfPlanFor(plan.Req)
+	p.Info("    caching    latents %s · text-embeds %s · sampling %s", onOff(perf.CacheLatents), onOff(perf.CacheTextEmbeddings), onOff(!perf.DisableSampling))
 	p.Info("  Output       %s", plan.OutputPath)
 	p.Info("  ───────────────────────────────────────────")
 }

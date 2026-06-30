@@ -29,6 +29,9 @@ type Entry struct {
 	Gated   bool    // requires HuggingFace auth / license acceptance
 	Custom  bool    // user-cataloged (came from config.custom_models)
 	Desc    string  // one-line description
+	// Files, when set, restricts a repo download to these HuggingFace glob
+	// patterns (avoids pulling diffusers folders the trainer doesn't use).
+	Files []string
 }
 
 // builtin is the curated set of popular base models. IDs match loradex base ids
@@ -37,8 +40,11 @@ var builtin = []Entry{
 	{
 		ID: "flux2-klein", Name: "FLUX.2 Klein (base 4B)", Arch: "flux2",
 		Repo: "black-forest-labs/FLUX.2-klein-base-4B", Format: "diffusers",
-		License: "FLUX.2-klein License", SizeGB: 24, Gated: false,
-		Desc: "FLUX.2 Klein base 4B — open weights, the variant ai-toolkit trains LoRAs on",
+		License: "FLUX.2-klein License", SizeGB: 9, Gated: false,
+		// ai-toolkit's flux2_klein_4b loader uses only this single transformer file
+		// (it fetches the Qwen3-4B text encoder + VAE itself), so skip the rest.
+		Files: []string{"flux-2-klein-base-4b.safetensors", "model_index.json"},
+		Desc:  "FLUX.2 Klein base 4B — open weights, the variant ai-toolkit trains LoRAs on",
 	},
 	{
 		ID: "flux2-klein-9b", Name: "FLUX.2 Klein (9B)", Arch: "flux2",

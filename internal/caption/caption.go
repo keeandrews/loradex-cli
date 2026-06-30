@@ -9,7 +9,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +35,9 @@ type Result struct {
 
 // Run captions every image in imageDir using the interpreter at modelPath, run
 // via the given python. A non-empty trigger is prepended to each caption.
-func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger string, p *output.Printer) (Result, error) {
+// onProgress (may be nil) is called with the running count of captioned images
+// so callers can render a progress bar; interpreter stderr goes to verbose logs.
+func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger string, onProgress func(done int), p *output.Printer) (Result, error) {
 	if python == "" {
 		return Result{}, output.Errorf(output.ExitValidation, "no_python",
 			"run `loradex setup` to configure a trainer (its Python runs the interpreter)",
@@ -62,6 +63,7 @@ func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger strin
 	}
 
 	var res Result
+	captioned := 0
 	done := make(chan struct{}, 2)
 	go func() { // stdout: JSON lines (per-image + final summary)
 		sc := bufio.NewScanner(stdout)
@@ -72,20 +74,22 @@ func Run(ctx context.Context, python, modelPath, imageDir, prompt, trigger strin
 			if json.Unmarshal([]byte(line), &m) != nil {
 				continue
 			}
-			if cap, ok := m["caption"].(string); ok {
-				p.Info("  %s → %s", m["image"], cap)
+			if _, ok := m["image"]; ok { // a per-image result (caption or error)
+				captioned++
+				if onProgress != nil {
+					onProgress(captioned)
+				}
 			} else if _, ok := m["ok"]; ok {
 				_ = json.Unmarshal([]byte(line), &res)
 			}
 		}
 		done <- struct{}{}
 	}()
-	go func() { // stderr: progress
+	go func() { // stderr: interpreter logs (model load, etc.) — verbose only
 		sc := bufio.NewScanner(stderr)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
-			if p.ProgressEnabled() {
-				fmt.Fprintf(p.Err, "  %s\n", sc.Text())
-			}
+			p.Debug("%s", sc.Text())
 		}
 		done <- struct{}{}
 	}()

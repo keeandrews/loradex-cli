@@ -8,7 +8,11 @@ package trainer
 // TODO(verify-schema): confirm the exact ai-toolkit keys against the installed
 // version; this targets the sd_trainer/LoRA schema.
 
-import "github.com/goccy/go-yaml"
+import (
+	"strings"
+
+	"github.com/goccy/go-yaml"
+)
 
 type atNetwork struct {
 	Type        string `yaml:"type"`
@@ -39,6 +43,7 @@ type atTrain struct {
 	GradientCheckpointing     bool    `yaml:"gradient_checkpointing"`
 	Seed                      int     `yaml:"seed"`
 	EnableBucket              bool    `yaml:"enable_bucket"`
+	NoiseScheduler            string  `yaml:"noise_scheduler,omitempty"` // "flowmatch" for FLUX; ai-toolkit defaults to ddpm
 }
 
 type atModel struct {
@@ -50,6 +55,7 @@ type atModel struct {
 
 type atSample struct {
 	SampleEvery int      `yaml:"sample_every"`
+	Sampler     string   `yaml:"sampler,omitempty"` // must match train.noise_scheduler
 	Width       int      `yaml:"width"`
 	Height      int      `yaml:"height"`
 	Seed        int      `yaml:"seed"`
@@ -106,6 +112,13 @@ func resolveCheckpoint(base string) string {
 
 func archForBase(base string) string { return baseArch[base] }
 
+// isFluxFamily reports whether a base is a FLUX model (1 or 2). FLUX trains with
+// flow-matching; ai-toolkit needs train.noise_scheduler = "flowmatch" (its
+// default is ddpm, which uses the wrong timestep path for FLUX).
+func isFluxFamily(base string) bool {
+	return isFlux(base) || archForBase(base) != "" || strings.HasPrefix(base, "flux")
+}
+
 // isFlux reports whether a base uses the legacy FLUX.1 (is_flux) loader. FLUX.2
 // uses the arch selector instead, so it is not "is_flux".
 func isFlux(base string) bool { return base == "flux1" }
@@ -134,9 +147,14 @@ func buildConfigYAML(req Request) ([]byte, error) {
 	for k, v := range p.TrainerExtra {
 		extra[k] = v
 	}
+	// FLUX trains with flow-matching; the sampler must match the train scheduler.
+	noiseScheduler := ""
+	if isFluxFamily(req.Base) {
+		noiseScheduler = "flowmatch"
+	}
 	// Validation sampling is opt-in (--samples N). When 0, emit no prompts and
 	// push sample_every past the run so ai-toolkit never generates samples.
-	sample := atSample{SampleEvery: p.Steps + 1, Width: p.Resolution, Height: p.Resolution, Seed: p.Seed, Prompts: []string{}}
+	sample := atSample{SampleEvery: p.Steps + 1, Sampler: noiseScheduler, Width: p.Resolution, Height: p.Resolution, Seed: p.Seed, Prompts: []string{}}
 	if req.Samples > 0 {
 		sample.SampleEvery = p.SaveEvery
 		sample.Prompts = samplePrompts(req, req.Samples)
@@ -158,7 +176,7 @@ func buildConfigYAML(req Request) ([]byte, error) {
 		Train: atTrain{
 			Steps: p.Steps, BatchSize: p.Batch, GradientAccumulationSteps: p.GradAccum,
 			LR: p.LR, Optimizer: p.Optimizer, Dtype: p.Precision, TrainTextEncoder: p.TrainTextEncoder,
-			GradientCheckpointing: true, Seed: p.Seed, EnableBucket: p.Bucketing,
+			GradientCheckpointing: true, Seed: p.Seed, EnableBucket: p.Bucketing, NoiseScheduler: noiseScheduler,
 		},
 		Model:  atModel{NameOrPath: req.BaseCheckpoint, Arch: archForBase(req.Base), IsFlux: isFlux(req.Base), Quantize: p.Quantize},
 		Sample: sample,

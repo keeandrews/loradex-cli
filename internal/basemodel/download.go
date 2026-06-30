@@ -50,17 +50,25 @@ func Download(ctx context.Context, e Entry, python string, p *output.Printer) (s
 // gated repos uses the ambient HF login / HF_TOKEN.
 func downloadHF(ctx context.Context, e Entry, dir, python string, p *output.Printer) error {
 	if hf := lookPath("hf"); hf != "" {
-		return runStreaming(ctx, p, hf, "download", e.Repo, "--local-dir", dir)
+		args := []string{"download", e.Repo, "--local-dir", dir}
+		for _, pat := range e.Files {
+			args = append(args, "--include", pat)
+		}
+		return runStreaming(ctx, p, hf, args...)
 	}
 	if hc := lookPath("huggingface-cli"); hc != "" {
-		return runStreaming(ctx, p, hc, "download", e.Repo, "--local-dir", dir)
+		args := []string{"download", e.Repo, "--local-dir", dir}
+		for _, pat := range e.Files {
+			args = append(args, "--include", pat)
+		}
+		return runStreaming(ctx, p, hc, args...)
 	}
 	if python != "" {
-		// argv form only; the repo id and dir are passed as separate argv, not
-		// interpolated into the script source.
+		// argv form only; repo id, dir, and any allow-patterns are passed as
+		// separate argv, not interpolated into the script source.
 		script := "import sys; from huggingface_hub import snapshot_download; " +
-			"snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])"
-		return runStreaming(ctx, p, python, "-c", script, e.Repo, dir)
+			"snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2], allow_patterns=(sys.argv[3:] or None))"
+		return runStreaming(ctx, p, python, append([]string{"-c", script, e.Repo, dir}, e.Files...)...)
 	}
 	return output.Errorf(output.ExitValidation, "no_hf_downloader",
 		"install the HuggingFace CLI (`pip install huggingface_hub[cli]`) or configure trainer.ai_toolkit.python",

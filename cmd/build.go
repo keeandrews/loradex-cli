@@ -21,6 +21,7 @@ import (
 	"github.com/keeandrews/loradex-cli/internal/trainer"
 	"github.com/keeandrews/loradex-cli/internal/trainerreg"
 	"github.com/keeandrews/loradex-cli/internal/workspace"
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -33,6 +34,10 @@ var (
 	bOptimizer, bPrecision                                                              string
 	bNoBucketing, bTrainTextEncoder, bInit                                              bool
 )
+
+// wizardOverrides holds the hyperparameters chosen in the interactive wizard
+// (nil when the wizard didn't run); it replaces the flag layer for this run.
+var wizardOverrides map[string]any
 
 var buildCmd = &cobra.Command{
 	Use:   "build [images]",
@@ -66,7 +71,13 @@ Examples:
 			return err
 		}
 
-		// 4. Resolve base/target: --base > project default > global config default.
+		// 2. Resolve dataset (needed for image count / the wizard).
+		dsDir, dsSummary, source, err := resolveDataset(p, root, args)
+		if err != nil {
+			return err
+		}
+
+		// 3. Resolve base: --base > project default > global config default.
 		base := bBase
 		if base == "" {
 			base = proj.DefaultBase
@@ -76,16 +87,49 @@ Examples:
 				base = f.DefaultBase
 			}
 		}
+
+		// 3b. Interactive wizard: present every setting prefilled with defaults,
+		// arrow-key editable, then start. Skipped for -y / --json / non-TTY / raw
+		// config / --resume.
+		dev := trainer.DetectDevice(bDevice)
+		wizardOverrides = nil
+		interactive := p.IsTTY() && !g.yes && !g.json && bConfig == "" && !bResume
+		if interactive {
+			if base == "" {
+				base = "flux2-klein"
+			}
+			def, _ := profile.Resolve(base, profile.Layers{Device: dev.Device, ImageCount: dsSummary.ImageCount})
+			name := bName
+			if name == "" {
+				name = proj.Name + "-" + base
+			}
+			wc := wizardCfg{
+				base: base, interpreterID: orDefault(bInterpreter, resolveInterpreter()), trigger: bTrigger, name: name,
+				steps: bSteps, rank: def.Rank, alpha: def.Alpha, lr: def.LR,
+				optimizer: def.Optimizer, precision: def.Precision, resolution: def.Resolution,
+			}
+			res, ok := runBuildWizard(fmt.Sprintf("Train a LoRA in %q  ·  %d images", proj.Name, dsSummary.ImageCount), wc)
+			if !ok {
+				return output.Errorf(output.ExitError, "aborted", "", "cancelled")
+			}
+			base, bBase, bTrigger, bName, bInterpreter = res.base, res.base, res.trigger, res.name, res.interpreterID
+			bCaption = "auto"
+			if res.interpreterID == "" {
+				bCaption = "none"
+			}
+			wizardOverrides = map[string]any{
+				"rank": res.rank, "alpha": res.alpha, "lr": res.lr,
+				"optimizer": res.optimizer, "precision": res.precision, "resolution": res.resolution,
+			}
+			if res.steps > 0 {
+				wizardOverrides["steps"] = res.steps
+			}
+		}
 		if base == "" {
 			return output.Usage("specify --base (e.g. flux2-klein), or set one with `loradex config set default-base <id>`")
 		}
 
-		// 2. Resolve dataset.
-		dsDir, dsSummary, source, err := resolveDataset(p, root, args)
-		if err != nil {
-			return err
-		}
-		// 3. Captions. A captioner (interpreter) is "configured" if one is
+		// 3c. Captions. A captioner (interpreter) is "configured" if one is
 		// resolvable — that makes the default/auto mode generate real captions.
 		interp := resolveInterpreter()
 		captionMode, capWarn := dataset.ResolveCaptionMode(dsDir, bCaption, interp != "")
@@ -108,11 +152,15 @@ Examples:
 		nextV := workspace.NextVersion(root, base)
 		versionDir := workspace.VersionDir(root, base, nextV)
 
-		// 5. Resolve + validate the profile.
-		dev := trainer.DetectDevice(bDevice)
+		// 5. Resolve + validate the profile. Wizard choices (when present)
+		// override flags as the explicit layer.
+		flagLayer := buildFlagOverrides(cmd)
+		if wizardOverrides != nil {
+			flagLayer = wizardOverrides
+		}
 		prof, warnings := profile.Resolve(base, profile.Layers{
 			GlobalBase: globalTraining(base), Named: namedProfile(bProfile), ProjectBase: proj.Training[base],
-			Flags: buildFlagOverrides(cmd), Device: dev.Device, ImageCount: dsSummary.ImageCount,
+			Flags: flagLayer, Device: dev.Device, ImageCount: dsSummary.ImageCount,
 		})
 		for _, w := range warnings {
 			p.Info("note: %s", w)
@@ -158,13 +206,14 @@ Examples:
 			return err
 		}
 
-		// 7. Confirm.
+		// 7. Plan review. (The wizard already served as the interactive
+		// confirmation; -y/non-interactive proceed directly.)
 		printBuildPlan(p, proj, cat, base, nextV, dsDir, dsSummary, source, dev, prof, plan)
 		if bDryRun {
 			p.Info("dry-run — no training performed")
 			return nil
 		}
-		if !g.yes && !confirm(p, "Proceed with training?") {
+		if !interactive && !g.yes && !g.json && !confirm(p, "Proceed with training?") {
 			return output.Errorf(output.ExitError, "aborted", "", "aborted")
 		}
 
@@ -175,24 +224,28 @@ Examples:
 		}
 		plan.Req.BaseCheckpoint = ckpt
 
-		// 7c. Caption the dataset with the interpreter (mode auto) before training.
+		// 7c. Caption the dataset (mode auto): progress bar → preview → confirm.
 		if captionMode == "auto" && interp != "" {
-			if err := captionDataset(cmd, p, interp, dsDir, bTrigger); err != nil {
+			if err := captionDataset(cmd, p, interp, dsDir, bTrigger, dsSummary.ImageCount); err != nil {
 				return err
 			}
 			plan.Req.CaptionsHaveTrigger = bTrigger != ""
+			if interactive && !confirmCaptions(p, dsDir) {
+				return output.Errorf(output.ExitError, "aborted", "review the captions and re-run", "aborted after caption review")
+			}
 		}
 
-		// 8. Train.
-		p.Info("training… (cache: %s)", req.CacheDir)
-		res, err := tr.Train(cmd.Context(), plan, func(pr trainer.Progress) {
-			if p.ProgressEnabled() && pr.TotalSteps > 0 {
-				fmt.Fprintf(p.Err, "\rstep %d/%d  loss %.4f   ", pr.Step, pr.TotalSteps, pr.Loss)
+		// 7d. Output preview → confirm.
+		if interactive {
+			showOutputPreview(p, versionDir, plan.OutputPath)
+			if !confirm(p, "Generate these files and start training?") {
+				return output.Errorf(output.ExitError, "aborted", "", "aborted")
 			}
-		})
-		if p.ProgressEnabled() {
-			fmt.Fprintln(p.Err)
 		}
+
+		// 8. Train with a progress bar (steps + ETA).
+		p.Info("training… (cache: %s)", req.CacheDir)
+		res, err := trainWithProgress(cmd, p, tr, plan)
 		if err != nil {
 			return err
 		}
@@ -433,7 +486,7 @@ func resolveInterpreter() string {
 
 // captionDataset generates per-image captions with the interpreter, downloading
 // it first if needed. Captions are written as <stem>.txt next to each image.
-func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trigger string) error {
+func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trigger string, total int) error {
 	e, ok := interpreter.Find(interpID)
 	if !ok {
 		return output.Errorf(output.ExitValidation, "unknown_interpreter",
@@ -458,8 +511,17 @@ func captionDataset(cmd *cobra.Command, p *output.Printer, interpID, dsDir, trig
 		return err
 	}
 	_, python := trainerLocation()
-	p.Info("captioning dataset with %s…", e.Name)
-	res, err := caption.Run(cmd.Context(), python, modelPath, dsDir, caption.DefaultPrompt, trigger, p)
+	p.Info("captioning %d images with %s (loading the model first run)…", total, e.Name)
+	bar := progressbar.NewOptions(total,
+		progressbar.OptionSetDescription("  captions"),
+		progressbar.OptionSetWriter(p.Err),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetVisibility(p.ProgressEnabled()),
+		progressbar.OptionClearOnFinish(),
+	)
+	res, err := caption.Run(cmd.Context(), python, modelPath, dsDir, caption.DefaultPrompt, trigger,
+		func(done int) { _ = bar.Set(done) }, p)
+	_ = bar.Finish()
 	if err != nil {
 		return err
 	}

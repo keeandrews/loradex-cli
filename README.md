@@ -302,12 +302,27 @@ loradex status --path ~/.loradex/projects/portraits
 Train a LoRA locally by orchestrating ai-toolkit, then collect the output into a versioned,
 pushable model folder. Pass a folder of images, or omit it to retrain the project's dataset.
 
+**Interactive wizard.** Run on a terminal, `loradex build [images]` opens a wizard: every
+setting (base model, caption model, trigger, steps, rank, alpha, learning rate, optimizer,
+precision, resolution, name) is listed and prefilled with sensible defaults. Arrow-key to a
+setting and edit it — picking from a list where there's a fixed set of choices, or typing a
+validated value (e.g. steps) where there isn't — each with a one-line description and example.
+Choose **Start training** and loradex then:
+
+1. **captions** the dataset with the interpreter, showing a progress bar;
+2. shows a **caption preview** (filename → caption) to confirm;
+3. shows the **output files** that will be written (full paths) to confirm;
+4. **trains**, with a step progress bar, `done/total`, and estimated time remaining.
+
+Pass flags (or `-y` / `--json`) to skip the wizard for scripted runs.
+
 **Workflow flags**
 
 | Flag | Description |
 | --- | --- |
 | `--base <id>` | Base model (e.g. `flux2-klein`). Defaults to the project's base. |
 | `--trigger <token>` | Trigger token baked into captions. |
+| `--interpreter <id>` | Caption model to auto-caption the dataset (default: `default-interpreter`). |
 | `--type <kind>` | `subject` (default), `style`, or `concept`. |
 | `--name <slug>` | Repo/output slug (default `<project>-<base>`). |
 | `--dataset <dir>` | Use this folder as the dataset (external, not ingested). |

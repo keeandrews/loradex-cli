@@ -62,16 +62,27 @@ func trainWithProgress(cmd *cobra.Command, p *output.Printer, tr trainer.AIToolk
 	if total <= 0 {
 		total = plan.Req.Profile.Steps
 	}
-	bar := progressbar.NewOptions(total,
-		progressbar.OptionSetDescription("  training"),
-		progressbar.OptionSetWriter(p.Err),
-		progressbar.OptionShowCount(),
-		progressbar.OptionShowElapsedTimeOnFinish(),
-		progressbar.OptionSetPredictTime(true),
-		progressbar.OptionSetVisibility(p.ProgressEnabled()),
-		progressbar.OptionClearOnFinish(),
-	)
+	// The model load + first step (MPSGraph compile on Apple Silicon) emit no
+	// step line for minutes, so show a spinner until the first step lands, then
+	// switch to the determinate bar.
+	var bar *progressbar.ProgressBar
+	spin := startSpinner(p, "training — preparing model + first step (the first step is slowest on Apple Silicon)")
 	res, err := tr.Train(cmd.Context(), plan, func(pr trainer.Progress) {
+		if pr.Step > 0 && bar == nil {
+			spin.stop()
+			bar = progressbar.NewOptions(total,
+				progressbar.OptionSetDescription("  training"),
+				progressbar.OptionSetWriter(p.Err),
+				progressbar.OptionShowCount(),
+				progressbar.OptionShowElapsedTimeOnFinish(),
+				progressbar.OptionSetPredictTime(true),
+				progressbar.OptionSetVisibility(p.ProgressEnabled()),
+				progressbar.OptionClearOnFinish(),
+			)
+		}
+		if bar == nil {
+			return
+		}
 		if pr.TotalSteps > 0 {
 			bar.ChangeMax(pr.TotalSteps)
 		}
@@ -79,7 +90,10 @@ func trainWithProgress(cmd *cobra.Command, p *output.Printer, tr trainer.AIToolk
 			_ = bar.Set(pr.Step)
 		}
 	})
-	_ = bar.Finish()
+	spin.stop()
+	if bar != nil {
+		_ = bar.Finish()
+	}
 	if p.ProgressEnabled() {
 		fmt.Fprintln(p.Err)
 	}
